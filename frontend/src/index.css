@@ -1,0 +1,19 @@
+@import "tailwindcss";
+@import "slick-carousel/slick/slick.css";
+@import "slick-carousel/slick/slick-theme.css";
+/* You can add global custom CSS here later if needed */
+html, body, #root {
+  height: 100%;
+  margin: 0;
+  font-family: 'Roboto', sans-serif; /* Example font */
+}
+
+/* Basic layout for full height sticky footer */
+#root {
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+}
+main {
+  flex: 1; /* This makes the main content area expand to fill space */
+}

@@ -1,0 +1,171 @@
+/* Import root variables from main.css if not globally available, otherwise remove */
+/* :root {
+    --primary: #0066ff;
+    --secondary: #00d4ff;
+    --dark: #1e1e2c;
+    --light: #f8f9fa;
+    --gray: #6c757d;
+    --success: #28a745;
+    --danger: #dc3545;
+} */
+
+.checkout-section {
+    padding: 60px 0; /* Adjust padding as needed */
+    background-color: var(--light); /* Use your light background */
+    min-height: 100vh; /* Ensure it takes full viewport height */
+    display: flex;
+    align-items: flex-start; /* Align content to the top */
+    justify-content: center;
+}
+
+.checkout-section .container {
+    max-width: 1000px; /* Wider container for two columns */
+    margin: 0 auto;
+    padding: 0 20px;
+}
+
+.section-title {
+    font-size: 2.5rem;
+    margin-bottom: 40px; /* Reduced margin */
+    text-align: center;
+    color: var(--dark);
+}
+
+.section-title span {
+    color: var(--primary);
+}
+
+.checkout-content-wrapper {
+    display: flex;
+    flex-wrap: wrap; /* Allows wrapping on smaller screens */
+    gap: 30px; /* Space between the two columns */
+    justify-content: center; /* Center cards horizontally */
+    align-items: flex-start; /* Align items to the top within the wrapper */
+}
+
+.order-summary-card,
+.payment-form-card {
+    background-color: white;
+    padding: 30px;
+    border-radius: 8px;
+    box-shadow: 0 4px 15px rgba(0, 0, 0, 0.1);
+    flex: 1; /* Allow cards to grow */
+    min-width: 300px; /* Minimum width before wrapping */
+}
+
+.order-summary-card h3,
+.payment-form-card h3 {
+    font-size: 1.8rem;
+    color: var(--primary); /* Use primary color for titles */
+    margin-bottom: 25px;
+    border-bottom: 1px solid #eee;
+    padding-bottom: 15px;
+}
+
+.order-items-list {
+    list-style: none;
+    padding: 0;
+    margin-bottom: 25px;
+}
+
+.order-items-list li {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 10px 0;
+    border-bottom: 1px dashed #f0f0f0;
+    font-size: 0.95rem;
+    color: var(--dark);
+}
+
+.order-items-list li:last-child {
+    border-bottom: none;
+}
+
+.order-total-line {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-size: 1.2rem;
+    font-weight: bold;
+    padding-top: 20px;
+    border-top: 2px solid var(--gray); /* Use a subtle border for total */
+    color: var(--dark);
+}
+
+/* Payment Form Specific Styles */
+.checkout-form {
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
+}
+
+#payment-element {
+    margin-bottom: 20px;
+    /* Stripe's element will inject its own styles, but you can target the container */
+}
+
+.checkout-submit-btn {
+    width: 100%;
+    padding: 15px 25px;
+    font-size: 1.1rem;
+    font-weight: bold;
+    border-radius: 5px;
+    cursor: pointer;
+    transition: background-color 0.3s ease;
+    /* btn-primary already defines background and hover, ensure it's loaded */
+}
+
+.error-message {
+    color: var(--danger);
+    background-color: #ffeaea; /* Light red background for errors */
+    border: 1px solid var(--danger);
+    padding: 10px;
+    border-radius: 5px;
+    margin-top: 15px;
+    text-align: center;
+    font-size: 0.9rem;
+}
+
+.loading-state,
+.error-state {
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    align-items: center;
+    min-height: 80vh; /* Center vertically in viewport */
+    background-color: var(--light);
+    color: var(--dark);
+    font-size: 1.2rem;
+    padding: 20px;
+    text-align: center;
+}
+
+.error-state p {
+    color: var(--danger);
+    margin-bottom: 20px;
+}
+
+.loading-state p {
+    color: var(--primary);
+    animation: pulse 1.5s infinite ease-in-out;
+}
+
+@keyframes pulse {
+    0% { transform: scale(1); opacity: 1; }
+    50% { transform: scale(1.05); opacity: 0.8; }
+    100% { transform: scale(1); opacity: 1; }
+}
+
+/* Responsive Adjustments */
+@media (max-width: 768px) {
+    .checkout-content-wrapper {
+        flex-direction: column;
+        align-items: center;
+    }
+    .order-summary-card,
+    .payment-form-card {
+        width: 100%;
+        max-width: 450px; /* Limit width on small screens for better readability */
+    }
+}

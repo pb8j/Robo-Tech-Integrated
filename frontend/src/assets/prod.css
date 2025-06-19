@@ -1,0 +1,290 @@
+/* Existing Global Styles from main.css should be imported or applied */
+/* :root, *, body, .container, section, .section-title, .section-title span, .btn-primary etc. */
+
+/* --- Product Page Specific Styles --- */
+
+.product-page-wrapper {
+    background-color: var(--light); /* Use your existing light background color */
+    color: var(--dark); /* Use your existing dark text color */
+    min-height: 100vh;
+    padding-bottom: 100px; /* Space for the fixed cart summary */
+}
+
+/* Product Listing Section */
+.product-listing {
+    padding: 80px 0; /* Consistent with your existing sections */
+}
+
+.product-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); /* Responsive grid */
+    gap: 30px; /* Gap between cards */
+}
+
+.product-card {
+    background-color: white; /* White background for cards */
+    border-radius: 10px;
+    box-shadow: 0 4px 15px rgba(0, 0, 0, 0.1); /* Soft shadow */
+    overflow: hidden;
+    transition: transform 0.3s ease, box-shadow 0.3s ease;
+}
+
+.product-card:hover {
+    transform: translateY(-5px); /* Lift effect on hover */
+    box-shadow: 0 8px 20px rgba(0, 0, 0, 0.15);
+}
+
+.product-card img {
+    width: 100%;
+    height: 200px; /* Fixed height for images */
+    object-fit: cover; /* Cover the area, crop if necessary */
+    border-bottom: 1px solid #eee;
+}
+
+.product-content {
+    padding: 20px;
+}
+
+.product-content h3 {
+    font-size: 1.5rem;
+    color: var(--primary); /* Use your primary color for titles */
+    margin-bottom: 10px;
+}
+
+.product-content p {
+    font-size: 0.95rem;
+    color: var(--gray); /* Use your gray for descriptions */
+    margin-bottom: 15px;
+}
+
+.product-price {
+    font-size: 1.25rem;
+    font-weight: bold;
+    color: var(--dark);
+    margin-bottom: 20px;
+}
+
+.add-to-cart-btn {
+    width: 100%; /* Make the button full width */
+    padding: 12px 20px;
+    font-size: 1rem;
+    text-align: center;
+    /* Uses existing .btn-primary styles */
+}
+
+/* --- Floating Cart Summary --- */
+.cart-summary-floating {
+    position: fixed;
+    bottom: 30px;
+    right: 30px;
+    background: linear-gradient(135deg, var(--primary), var(--secondary)); /* Use your gradient */
+    color: white;
+    padding: 15px 25px;
+    border-radius: 50px; /* Pill shape */
+    box-shadow: 0 5px 20px rgba(0, 0, 0, 0.2);
+    display: flex;
+    align-items: center;
+    gap: 15px;
+    z-index: 1000; /* Ensure it stays on top */
+}
+
+.cart-summary-floating p {
+    margin: 0;
+    font-size: 1.1rem;
+    font-weight: 500;
+}
+
+.checkout-btn {
+    /* Styles are mostly inherited from .btn-primary, might need slight adjustments */
+    background: white; /* White background for the checkout button in the floating cart */
+    color: var(--primary); /* Primary text color */
+    border: none;
+    padding: 10px 20px;
+    border-radius: 30px;
+    font-weight: 600;
+    transition: background-color 0.3s ease, color 0.3s ease;
+}
+
+.checkout-btn:hover {
+    background-color: #f0f0f0; /* Slightly darker white on hover */
+    color: var(--primary);
+}
+
+
+/* --- Cart Modal (Similar to Login Modal) --- */
+.modal {
+    display: none; /* Hidden by default */
+    position: fixed; /* Stay in place */
+    z-index: 2000; /* Sit on top */
+    left: 0;
+    top: 0;
+    width: 100%; /* Full width */
+    height: 100%; /* Full height */
+    overflow: auto; /* Enable scroll if needed */
+    background-color: rgba(0,0,0,0.6); /* Black w/ opacity */
+    display: flex; /* Use flexbox for centering */
+    justify-content: center;
+    align-items: center;
+}
+
+.modal-content {
+    background-color: white;
+    margin: auto; /* Centered */
+    padding: 30px;
+    border-radius: 10px;
+    width: 90%; /* Could be adjusted */
+    max-width: 500px; /* Maximum width */
+    box-shadow: 0 5px 25px rgba(0,0,0,0.3);
+    position: relative; /* For close button positioning */
+}
+
+.close-cart-modal {
+    color: var(--gray);
+    font-size: 28px;
+    font-weight: bold;
+    position: absolute;
+    top: 15px;
+    right: 20px;
+    cursor: pointer;
+    transition: color 0.3s ease;
+}
+
+.close-cart-modal:hover,
+.close-cart-modal:focus {
+    color: var(--dark);
+    text-decoration: none;
+}
+
+.modal-content h2 {
+    font-size: 2rem;
+    color: var(--primary);
+    margin-bottom: 25px;
+    text-align: center;
+}
+
+.cart-items-list {
+    max-height: 300px; /* Scrollable if many items */
+    overflow-y: auto;
+    margin-bottom: 20px;
+    border-top: 1px solid #eee;
+    padding-top: 15px;
+}
+
+.cart-item {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 12px 0;
+    border-bottom: 1px solid #eee;
+}
+
+.cart-item:last-child {
+    border-bottom: none;
+}
+
+.item-name {
+    font-weight: 600;
+    color: var(--dark);
+    font-size: 1rem;
+}
+
+.item-details {
+    color: var(--gray);
+    font-size: 0.9rem;
+}
+
+.remove-item-btn {
+    background-color: transparent;
+    color: var(--danger);
+    border: none;
+    padding: 8px 12px;
+    border-radius: 5px;
+    cursor: pointer;
+    font-weight: 500;
+    transition: background-color 0.3s ease;
+}
+
+.remove-item-btn:hover {
+    background-color: rgba(var(--danger), 0.1);
+}
+
+.cart-total-section {
+    text-align: right;
+    margin-top: 20px;
+    border-top: 2px solid var(--primary); /* A distinct line for total */
+    padding-top: 20px;
+}
+
+.cart-total-section p {
+    font-size: 1.4rem;
+    font-weight: 600;
+    color: var(--dark);
+    margin-bottom: 15px;
+}
+
+.total-amount {
+    color: var(--primary);
+    font-size: 1.6rem;
+}
+
+.checkout-modal-btn {
+    width: 100%;
+    padding: 12px 20px;
+    font-size: 1.1rem;
+    /* Uses existing .btn-primary styles */
+}
+
+/* Cart Icon Button */
+.cart-icon-btn {
+    position: fixed;
+    bottom: 30px;
+    left: 30px; /* Position on the left side, or adjust as needed */
+    background: var(--primary); /* Use primary color */
+    color: white;
+    border: none;
+    border-radius: 50%; /* Circular button */
+    width: 60px;
+    height: 60px;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    font-size: 1.5rem;
+    box-shadow: 0 4px 15px rgba(0, 0, 0, 0.2);
+    cursor: pointer;
+    z-index: 1000;
+    transition: background-color 0.3s ease;
+}
+
+.cart-icon-btn:hover {
+    background-color: #0056e6; /* Slightly darker primary on hover */
+}
+
+/* Media Queries for Responsiveness (adjust as needed) */
+@media (max-width: 768px) {
+    .product-grid {
+        grid-template-columns: 1fr; /* Single column on smaller screens */
+    }
+
+    .cart-summary-floating {
+        flex-direction: column;
+        bottom: 20px;
+        right: 20px;
+        left: 20px; /* Full width on mobile */
+        border-radius: 10px;
+        padding: 15px;
+        text-align: center;
+    }
+
+    .checkout-btn {
+        width: 100%;
+        margin-top: 10px;
+    }
+    
+    .cart-icon-btn {
+        bottom: 20px;
+        left: 20px;
+        width: 50px;
+        height: 50px;
+        font-size: 1.2rem;
+    }
+}

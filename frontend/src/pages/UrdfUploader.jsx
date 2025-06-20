@@ -1,225 +1,329 @@
 // src/pages/UrdfUploader.jsx
-import React, { useRef, useState, Suspense, useEffect, useCallback } from 'react';
+import React, { useRef, useState, Suspense, useEffect, useCallback, useMemo } from 'react';
 import { Canvas, useLoader } from '@react-three/fiber';
-import { OrbitControls, Environment, Text } from '@react-three/drei';
+import { OrbitControls, Environment } from '@react-three/drei';
 import URDFLoader from 'urdf-loader';
 import * as THREE from 'three';
+import { Text } from '@react-three/drei';
+import { LoadingManager, FileLoader } from 'three';
 
 /**
- * CustomURDFModelLoader component handles loading the URDF model
- * using a custom file loader that can access in-memory uploaded files.
- * @param {Object} props
- * @param {File} props.urdfFile - The uploaded URDF file Blob.
- * @param {Map<string, ArrayBuffer>} props.meshFiles - A map of mesh file paths to their ArrayBuffer content.
- * @param {string} props.basePath - The base path for resolving relative URDF paths.
+ * UrdfRobotModel component handles loading and displaying a URDF robot model.
+ * It uses a custom file loader with a URL modifier to resolve mesh paths from an in-memory file map.
+ * @param {object} props
+ * @param {string} props.urdfContent - The Blob URL of the URDF file content.
+ * @param {object} props.fileMap - A plain object mapping filenames (keys) to Blob URLs (values) of mesh files.
+ * @param {function} [props.onRobotLoaded] - Optional callback when the robot model is loaded.
+ * @param {Array<number>} [props.initialPosition=[0,0,0]] - Initial position for the robot.
+ * @param {number} [props.scale=1.0] - Initial scale for the robot.
  */
-const CustomURDFModelLoader = ({ urdfFile, meshFiles, basePath }) => {
-    const robotRef = useRef();
+const UrdfRobotModel = ({ urdfContent, fileMap, onRobotLoaded, initialPosition = [0, 0, 0], scale = 1.0 }) => {
+    const robotRef = useRef(null);
 
-    // Memoize the custom file loader to prevent unnecessary re-creations
-    const customFileLoader = useCallback(() => {
-        const loader = new THREE.FileLoader();
-        loader.setResponseType('arraybuffer'); // Meshes are often binary
+    const urdfContentUrl = useMemo(() => {
+        if (urdfContent) { // urdfContent is already a Blob URL in this context
+            return urdfContent;
+        }
+        return null;
+    }, [urdfContent]);
 
-        // Override the load method to check our in-memory meshFiles map first
-        const originalLoad = loader.load;
-        loader.load = (url, onLoad, onProgress, onError) => {
-            // Normalize URL to handle common path separators and ensure it matches map keys
-            const normalizedUrl = url.replace(/\\/g, '/');
-            const fileName = normalizedUrl.split('/').pop();
+    const robotLoadedInstance = useLoader(URDFLoader, urdfContentUrl, (loader) => {
+        const customLoadingManager = new LoadingManager();
+        const customFileLoader = new FileLoader(customLoadingManager);
+        customFileLoader.setResponseType('arraybuffer');
+        customLoadingManager.addHandler('file', customFileLoader);
+        loader.manager = customLoadingManager;
 
-            // Attempt to find the file in our uploaded mesh files map
-            // We'll try a few common patterns for finding the file,
-            // as URDF paths can be tricky (e.g., "package://robot_description/meshes/mesh.stl")
-            const possibleKeys = [
-                normalizedUrl, // Exact match
-                fileName,      // Just the file name
-                normalizedUrl.replace(/^package:\/\/[^/]+\//, ''), // Remove 'package://...' prefix
-                'meshes/' + fileName // Common "meshes/" prefix
+        loader.manager.setURLModifier((url) => {
+            console.log(`[UrdfRobotModel][URLModifier Debug] INCOMING URL from URDFLoader: '${url}'`);
+
+            let lookupKeyCandidate = url;
+
+            if (url.startsWith('blob:http')) {
+                try {
+                    const parsedUrl = new URL(url);
+                    lookupKeyCandidate = parsedUrl.pathname.substring(1);
+                    console.log(`[UrdfRobotModel][URLModifier Debug] Extracted path from blob URL: '${lookupKeyCandidate}'`);
+                } catch (e) {
+                    console.warn(`[UrdfRobotModel][URLModifier] Could not parse blob URL: ${url}`, e);
+                }
+            }
+
+            if (lookupKeyCandidate.startsWith('package://')) {
+                const parts = lookupKeyCandidate.substring('package://'.length).split('/');
+                if (parts.length > 1) {
+                    lookupKeyCandidate = parts.slice(1).join('/');
+                } else {
+                    lookupKeyCandidate = '';
+                }
+                console.log(`[UrdfRobotModel][URLModifier Debug] After package:// removal: '${lookupKeyCandidate}'`);
+            } else if (lookupKeyCandidate.startsWith('model://')) {
+                lookupKeyCandidate = lookupKeyCandidate.substring('model://'.length);
+                console.log(`[UrdfRobotModel][URLModifier Debug] After model:// removal: '${lookupKeyCandidate}'`);
+            }
+            if (lookupKeyCandidate.startsWith('./')) {
+                lookupKeyCandidate = lookupKeyCandidate.substring('./'.length);
+                console.log(`[UrdfRobotModel][URLModifier Debug] After ./ removal: '${lookupKeyCandidate}'`);
+            }
+            if (lookupKeyCandidate.startsWith('../')) {
+                lookupKeyCandidate = lookupKeyCandidate.substring('../'.length);
+                console.log(`[UrdfRobotModel][URLModifier Debug] After ../ removal: '${lookupKeyCandidate}'`);
+            }
+
+            lookupKeyCandidate = lookupKeyCandidate.replace(/\\/g, '/');
+            console.log(`[UrdfRobotModel][URLModifier Debug] After path normalization: '${lookupKeyCandidate}'`);
+
+            if (lookupKeyCandidate.startsWith('/')) {
+                lookupKeyCandidate = lookupKeyCandidate.substring(1);
+                console.log(`[UrdfRobotModel][URLModifier Debug] After leading slash removal: '${lookupKeyCandidate}'`);
+            }
+
+            let foundBlobUrl = null;
+            let usedKey = null;
+
+            const possibleLookupKeys = [
+                lookupKeyCandidate,
+                lookupKeyCandidate.toLowerCase(),
+                lookupKeyCandidate.split('/').pop(),
+                lookupKeyCandidate.split('/').pop().toLowerCase()
             ];
 
-            let foundMesh = null;
-            for (const key of possibleKeys) {
-                if (meshFiles.has(key)) {
-                    foundMesh = meshFiles.get(key);
-                    break;
-                }
-                // Also try decoding URI components for special characters
-                try {
-                    const decodedKey = decodeURIComponent(key);
-                    if (meshFiles.has(decodedKey)) {
-                        foundMesh = meshFiles.get(decodedKey);
+            const uniquePossibleKeys = [...new Set(possibleLookupKeys.filter(key => key !== ''))];
+            console.log(`[UrdfRobotModel][URLModifier Debug] Trying lookup keys: ${uniquePossibleKeys.join(', ')}`);
+
+
+            if (fileMap && typeof fileMap === 'object') {
+                for (const keyAttempt of uniquePossibleKeys) {
+                    if (fileMap[keyAttempt]) {
+                        foundBlobUrl = fileMap[keyAttempt];
+                        usedKey = keyAttempt;
                         break;
                     }
-                } catch (e) {
-                    // Ignore URIError if decoding fails
                 }
             }
 
 
-            if (foundMesh) {
-                console.log(`CustomLoader: Found mesh in memory for URL: ${url} (Key: ${foundMesh.name || fileName})`);
-                onLoad(foundMesh); // Provide the ArrayBuffer directly
+            if (foundBlobUrl) {
+                console.log(`[UrdfRobotModel][URLModifier] ✅ SUCCESS! Provided data for "${url}" using key: "${usedKey}".`);
+                return foundBlobUrl;
             } else {
-                console.warn(`CustomLoader: Mesh not found in uploaded files for URL: ${url}. Falling back to default loader.`);
-                // If not found in uploaded files, use the original loader to fetch from a URL
-                originalLoad.call(loader, url, onLoad, onProgress, onError);
-            }
-        };
-        return loader;
-    }, [meshFiles]); // Recreate customFileLoader if meshFiles changes
+                console.warn(`[UrdfRobotModel][URLModifier] ❌ ASSET NOT FOUND in fileMap for original URL: '${url}'.`);
+                console.log("Current keys in provided fileMap (your uploaded mesh filenames):", fileMap ? Object.keys(fileMap) : "fileMap is null/empty");
+                console.log("Please ensure one of the following keys is present in fileMap:", uniquePossibleKeys);
 
-    // Use the useLoader hook from @react-three/fiber to load the URDF model
-    // Pass the Blob directly to useLoader, and provide the custom file loader
-    const robot = useLoader(
-        URDFLoader,
-        URL.createObjectURL(urdfFile), // Create an object URL for the URDF file
-        (loader) => {
-            // Set the custom fileLoader
-            loader.fileLoader = customFileLoader();
-            // Set the working path for the URDF loader to resolve relative mesh paths
-            // If we're using in-memory blobs, the workingPath might not be strictly necessary
-            // but it's good practice for how URDF paths are typically structured.
-            // For uploaded files, the 'packagePath' concept is usually handled by
-            // matching file names/relative paths in the meshFiles Map.
-            loader.workingPath = basePath;
-            loader.parseVisual = true;
-            loader.parseCollision = false; // Usually not needed for visualization
-        }
-    );
+                return url;
+            }
+        });
+
+        loader.parseVisual = true;
+        loader.parseCollision = false;
+        loader.workingPath = "/";
+    });
 
     useEffect(() => {
-        if (robot) {
-            console.log("URDF Robot Loaded:", robot);
-            // Center and scale the robot for better viewing
-            const box = new THREE.Box3().setFromObject(robot);
-            const center = box.getCenter(new THREE.Vector3());
-            const size = box.getSize(new THREE.Vector3());
+        if (robotLoadedInstance) {
+            console.log("URDF Robot Loaded (Three.js object):", robotLoadedInstance);
+            console.log("Available Joints:", Object.keys(robotLoadedInstance.joints));
 
-            const maxDim = Math.max(size.x, size.y, size.z);
-            const scaleFactor = 5 / maxDim; // Adjust so the robot fits nicely in a 5 unit space
-            robot.scale.set(scaleFactor, scaleFactor, scaleFactor);
+            robotRef.current = robotLoadedInstance;
+            robotLoadedInstance.scale.set(scale, scale, scale);
+            robotLoadedInstance.position.set(...initialPosition);
 
-            // Recalculate box with new scale
-            box.setFromObject(robot);
-            box.getCenter(center); // Get new center
-            robot.position.sub(center.set(center.x, box.min.y, center.z)); // Move robot to sit on the origin
-
-            robotRef.current = robot; // Store ref for potential later manipulation
+            if (onRobotLoaded) {
+                onRobotLoaded(robotLoadedInstance);
+            }
         }
-    }, [robot]);
+    }, [robotLoadedInstance, onRobotLoaded, scale, initialPosition]);
 
-    return <primitive object={robot} />;
+    useEffect(() => {
+        return () => {
+            // urdfContent is already a Blob URL coming from parent. Revoke it here.
+            if (urdfContent) {
+                try {
+                    URL.revokeObjectURL(urdfContent);
+                    console.log(`[UrdfRobotModel] Revoked URDF Blob URL: ${urdfContent}`);
+                } catch (e) {
+                    console.warn(`[UrdfRobotModel] Error revoking URDF blob URL: ${urdfContent}`, e);
+                }
+            }
+        };
+    }, [urdfContent]);
+
+    if (!robotLoadedInstance) {
+        return null;
+    }
+
+    return <primitive object={robotLoadedInstance} />;
 };
 
 
+// --- Main UrdfUploader Component ---
 const UrdfUploader = () => {
+    // State to hold the main URDF file (as a File object)
     const [urdfFile, setUrdfFile] = useState(null);
+    // State to hold the mapping of mesh filenames to their ArrayBuffer content
     const [meshFiles, setMeshFiles] = useState(new Map()); // Map: filename -> ArrayBuffer
+    // State for display status messages
     const [status, setStatus] = useState("Upload your URDF and mesh files.");
-    const [robotLoaded, setRobotLoaded] = useState(false); // State to control robot display
+    // State to control when the robot Canvas should attempt to render
+    const [robotLoaded, setRobotLoaded] = useState(false);
 
-    // Ref for the file input elements to reset them
+    // Refs for file input elements
     const urdfInputRef = useRef(null);
     const meshesInputRef = useRef(null);
 
-    // --- File Handling Functions ---
+    // Function to derive the Blob URL for the URDF content, memoized
+    const urdfContentBlobUrl = useMemo(() => {
+        if (urdfFile) {
+            return URL.createObjectURL(urdfFile);
+        }
+        return null;
+    }, [urdfFile]);
+
+    // Function to convert Map of ArrayBuffers to a plain object of Blob URLs for the UrdfRobotModel
+    const fileMapForModel = useMemo(() => {
+        const obj = {};
+        meshFiles.forEach((arrayBuffer, filename) => {
+            // Create Blob URL for each mesh ArrayBuffer
+            obj[filename] = URL.createObjectURL(new Blob([arrayBuffer]));
+        });
+        return obj;
+    }, [meshFiles]);
+
+    // Handle cleanup of Blob URLs created for mesh files when component unmounts or meshFiles change
+    useEffect(() => {
+        return () => {
+            console.log("[UrdfUploader Cleanup] Revoking mesh Blob URLs...");
+            if (fileMapForModel) {
+                Object.values(fileMapForModel).forEach(blobUrl => {
+                    try {
+                        URL.revokeObjectURL(blobUrl);
+                    } catch (e) {
+                        console.warn(`[UrdfUploader Cleanup] Error revoking mesh blob URL: ${blobUrl}`, e);
+                    }
+                });
+            }
+        };
+    }, [fileMapForModel]);
+
 
     const handleUrdfFileChange = (e) => {
         const file = e.target.files[0];
-        if (file && file.name.endsWith('.urdf')) {
+        if (file && (file.name.toLowerCase().endsWith('.urdf') || file.name.toLowerCase().endsWith('.xml'))) {
             setUrdfFile(file);
             setStatus(`URDF file selected: ${file.name}`);
+            setRobotLoaded(false);
         } else {
             setUrdfFile(null);
-            setStatus("Please select a .urdf file.");
+            setStatus("Please select a .urdf or .xml file.");
+            setRobotLoaded(false);
         }
-        setRobotLoaded(false); // Reset display if files change
     };
 
     const handleMeshFilesChange = (e) => {
         const files = Array.from(e.target.files);
         const newMeshMap = new Map();
-        let valid = true;
-        files.forEach(file => {
-            // Store file content directly as ArrayBuffer
-            const reader = new FileReader();
-            reader.onload = (event) => {
-                newMeshMap.set(file.name, event.target.result); // Use file.name as key
-                // You might need more sophisticated keying if your URDF uses complex package paths
-                // e.g., newMeshMap.set('package://my_robot/meshes/' + file.name, event.target.result);
-            };
-            reader.onerror = () => {
-                valid = false;
-                setStatus(`Error reading file: ${file.name}`);
-            };
-            reader.readAsArrayBuffer(file);
+        const readPromises = files.map(file => {
+            return new Promise((resolve, reject) => {
+                const reader = new FileReader();
+                reader.onload = (event) => {
+                    newMeshMap.set(file.name, event.target.result); // Store original casing from file.name
+                    console.log(`[UrdfUploader] Stored mesh in map: "${file.name}"`);
+                    resolve();
+                };
+                reader.onerror = (event) => {
+                    console.error(`[UrdfUploader] Error reading file "${file.name}":`, event.target.error);
+                    reject(event.target.error);
+                };
+                reader.readAsArrayBuffer(file);
+            });
         });
 
-        if (valid) {
-            setMeshFiles(newMeshMap);
-            setStatus(`Selected ${files.length} mesh files.`);
-        } else {
-            setMeshFiles(new Map());
-            setRobotLoaded(false);
-        }
+        Promise.all(readPromises)
+            .then(() => {
+                setMeshFiles(newMeshMap);
+                setStatus(`Selected ${files.length} mesh files.`);
+                console.log(`[UrdfUploader] All mesh files processed. Final Map keys:`, Array.from(newMeshMap.keys()));
+                setRobotLoaded(false);
+            })
+            .catch(error => {
+                setStatus(`Error reading some mesh files: ${error.message}`);
+                setMeshFiles(new Map());
+                setRobotLoaded(false);
+                console.error("[UrdfUploader] Error during mesh file processing:", error);
+            });
     };
 
     const handleDrop = useCallback((e, type) => {
         e.preventDefault();
         e.stopPropagation();
-        e.target.classList.remove('border-blue-500', 'bg-blue-900'); // Remove drag-over styles
+        e.target.classList.remove('border-blue-500', 'bg-blue-900');
 
         const files = Array.from(e.dataTransfer.files);
 
         if (type === 'urdf') {
-            const urdf = files.find(f => f.name.endsWith('.urdf'));
+            const urdf = files.find(f => f.name.toLowerCase().endsWith('.urdf') || f.name.toLowerCase().endsWith('.xml'));
             if (urdf) {
                 setUrdfFile(urdf);
                 setStatus(`URDF file dropped: ${urdf.name}`);
+                setRobotLoaded(false);
             } else {
-                setStatus("Dropped file is not a .urdf file.");
+                setStatus("Dropped file is not a .urdf or .xml file.");
                 setUrdfFile(null);
+                setRobotLoaded(false);
             }
         } else if (type === 'meshes') {
-            const newMeshMap = new Map(meshFiles); // Start with existing meshes if any
-            let valid = true;
-            files.forEach(file => {
-                // Read as ArrayBuffer for URDFLoader
-                const reader = new FileReader();
-                reader.onload = (event) => {
-                    newMeshMap.set(file.name, event.target.result);
-                    // For more complex URDFs, you might need to infer relative paths
-                    // Example: if file is in 'meshes/my_mesh.stl', key could be 'my_mesh.stl' or 'meshes/my_mesh.stl'
-                };
-                reader.onerror = () => {
-                    valid = false;
-                    setStatus(`Error reading file: ${file.name}`);
-                };
-                reader.readAsArrayBuffer(file);
-            });
+            const meshFilesDropped = files.filter(f => f.name.toLowerCase().match(/\.(stl|obj|dae|gltf|glb)$/));
+            if (meshFilesDropped.length > 0) {
+                 const newMeshMap = new Map();
+                 const readPromises = meshFilesDropped.map(file => {
+                    return new Promise((resolve, reject) => {
+                        const reader = new FileReader();
+                        reader.onload = (event) => {
+                            newMeshMap.set(file.name, event.target.result); // Store original casing from file.name
+                            console.log(`[UrdfUploader] Stored dropped mesh: "${file.name}"`);
+                            resolve();
+                        };
+                        reader.onerror = (event) => {
+                            console.error(`[UrdfUploader] Error reading dropped file "${file.name}":`, event.target.error);
+                            reject(event.target.error);
+                        };
+                        reader.readAsArrayBuffer(file);
+                    });
+                });
 
-            if (valid) {
-                setMeshFiles(newMeshMap);
-                setStatus(`Dropped ${files.length} mesh files.`);
+                Promise.all(readPromises)
+                    .then(() => {
+                        setMeshFiles(newMeshMap);
+                        setStatus(`Dropped ${meshFilesDropped.length} mesh files.`);
+                        console.log(`[UrdfUploader] All dropped mesh files processed. Final Map keys:`, Array.from(newMeshMap.keys()));
+                        setRobotLoaded(false);
+                    })
+                    .catch(error => {
+                        setStatus(`Error reading some dropped mesh files: ${error.message}`);
+                        setMeshFiles(new Map());
+                        setRobotLoaded(false);
+                        console.error("[UrdfUploader] Error during dropped mesh file processing:", error);
+                    });
+
             } else {
+                setStatus("No valid mesh files (.obj, .stl, .dae, .gltf, .glb) dropped.");
                 setMeshFiles(new Map());
                 setRobotLoaded(false);
             }
         }
-        setRobotLoaded(false); // Reset display if files change
-    }, [meshFiles]); // Depend on meshFiles for combining existing with new
+    }, []);
 
     const handleDragOver = (e) => {
         e.preventDefault();
         e.stopPropagation();
-        e.target.classList.add('border-blue-500', 'bg-blue-900'); // Add visual feedback
+        e.target.classList.add('border-blue-500', 'bg-blue-900');
     };
 
     const handleDragLeave = (e) => {
         e.preventDefault();
         e.stopPropagation();
-        e.target.classList.remove('border-blue-500', 'bg-blue-900'); // Remove visual feedback
+        e.target.classList.remove('border-blue-500', 'bg-blue-900');
     };
 
     const handleLoadRobot = () => {
@@ -232,7 +336,7 @@ const UrdfUploader = () => {
             return;
         }
         setStatus("Loading robot...");
-        setRobotLoaded(true); // Trigger robot display
+        setRobotLoaded(true);
     };
 
     const handleClearFiles = () => {
@@ -240,23 +344,15 @@ const UrdfUploader = () => {
         setMeshFiles(new Map());
         setRobotLoaded(false);
         setStatus("Files cleared. Ready for new uploads.");
-        if (urdfInputRef.current) urdfInputRef.current.value = ''; // Reset file input
-        if (meshesInputRef.current) meshesInputRef.current.value = ''; // Reset file input
+        if (urdfInputRef.current) urdfInputRef.current.value = '';
+        if (meshesInputRef.current) meshesInputRef.current.value = '';
     };
 
-    // Determine the base path for the URDF loader.
-    // This is crucial for URDFs that reference meshes like "package://my_robot_name/meshes/my_mesh.stl"
-    // For simplicity, we'll assume the URDF file is at the root of the "package"
-    // and extract a potential package name if present in the URDF itself, or use a generic one.
-    const getUrdfBasePath = useCallback(() => {
-        // Here you would typically parse the URDF XML to find the package paths.
-        // For local files, the best we can do is try to match paths
-        // or ensure the mesh file names directly match the references in URDF.
-        // As a fallback, we'll try to use the directory where the URDF might "logically" be.
-        // For uploaded files, URDFLoader's fileLoader override is the most important part.
-        // The basePath here might just be a placeholder.
-        return '/'; // Default or a path that makes sense if files are flatly organized
-    }, []);
+    // This is now a regular function, not memoized as a value.
+    const getUrdfBasePath = () => {
+        return '/';
+    };
+
 
     return (
         <div className="min-h-screen bg-gradient-to-br from-gray-900 to-gray-700 flex flex-col items-center justify-center p-4 sm:p-6 font-inter text-white">
@@ -284,10 +380,10 @@ const UrdfUploader = () => {
                         onClick={() => urdfInputRef.current.click()}
                     >
                         <p className="text-xl mb-2">Drag & Drop URDF File Here</p>
-                        <p className="text-sm">(or click to select)</p>
+                        <p className="text-sm">(or click to select) - .urdf or .xml</p>
                         <input
                             type="file"
-                            accept=".urdf"
+                            accept=".urdf,.xml"
                             onChange={handleUrdfFileChange}
                             ref={urdfInputRef}
                             className="hidden"
@@ -306,10 +402,10 @@ const UrdfUploader = () => {
                         onClick={() => meshesInputRef.current.click()}
                     >
                         <p className="text-xl mb-2">Drag & Drop Mesh Files Here</p>
-                        <p className="text-sm">(e.g., .obj, .stl, .dae, .gltf - multiple files allowed)</p>
+                        <p className="text-sm">(e.g., .obj, .stl, .dae, .gltf, .glb - multiple files allowed)</p>
                         <input
                             type="file"
-                            accept=".obj,.stl,.dae,.gltf"
+                            accept=".obj,.stl,.dae,.gltf,.glb"
                             multiple
                             onChange={handleMeshFilesChange}
                             ref={meshesInputRef}
@@ -339,7 +435,7 @@ const UrdfUploader = () => {
             </div>
 
             {/* Robot Display Area */}
-            {robotLoaded && urdfFile && meshFiles.size > 0 && (
+            {robotLoaded && urdfFile && meshFiles.size > 0 ? (
                 <div className="w-full h-96 bg-gray-700 rounded-lg overflow-hidden shadow-inner border border-gray-600">
                     <Canvas camera={{ position: [1, 1, 1], fov: 75 }}>
                         <ambientLight intensity={0.8} />
@@ -347,14 +443,19 @@ const UrdfUploader = () => {
                         <directionalLight position={[-2, -5, -2]} intensity={0.5} />
                         <Environment preset="studio" />
                         <Suspense fallback={<Text color="white" anchorX="center" anchorY="middle">Loading Robot Model...</Text>}>
-                            <CustomURDFModelLoader
-                                urdfFile={urdfFile}
-                                meshFiles={meshFiles}
-                                basePath={getUrdfBasePath()}
+                            <UrdfRobotModel
+                                urdfContent={urdfContentBlobUrl} // Pass the Blob URL derived from urdfFile
+                                fileMap={fileMapForModel} // Pass the plain object of Blob URLs for meshes
+                                initialPosition={[0, 0, 0]} // Default position
+                                scale={1.0} // Default scale
                             />
                         </Suspense>
                         <OrbitControls />
                     </Canvas>
+                </div>
+            ) : (
+                <div className="w-full h-96 bg-gray-700 rounded-lg overflow-hidden shadow-inner border border-gray-600 flex items-center justify-center text-gray-400 text-xl">
+                    {urdfFile && meshFiles.size > 0 ? "Click 'Load Robot' to view." : "Upload URDF and mesh files to begin."}
                 </div>
             )}
         </div>

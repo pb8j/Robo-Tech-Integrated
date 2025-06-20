@@ -1,11 +1,11 @@
-// src/components/UrdfRobotModel.jsx
+// src/components/UrdfRobotModel.jsx (or embedded in controlPanel.jsx/PhoneCam.jsx)
 import React, { useEffect, Suspense } from "react";
 import { Canvas, useLoader } from "@react-three/fiber";
 import URDFLoader from 'urdf-loader';
 import { OrbitControls, Environment, Text } from "@react-three/drei";
 import * as THREE from 'three';
 
-// Define robot configurations for both models (moved here for encapsulation)
+// Define robot configurations for both models (kept here for context, or imported from a shared file)
 const ROBOT_MODELS = {
     hexapod_robot: {
         urdfPath: "/hexapod_robot/crab_model.urdf",
@@ -48,61 +48,61 @@ const UrdfRobotModel = ({ jointStates, controlMode, selectedRobotName, onRobotLo
             console.log(`Available Joints (${robotConfig.name}):`, Object.keys(robot.joints));
 
             // Apply a scale factor to make the robot visible and appropriately sized
-            const scaleFactor = 10;
+            // Scale and position might need different adjustments for JAXON JVRC
+            let scaleFactor;
+            if (selectedRobotName === 'jaxon_jvrc') {
+                scaleFactor = 0.001; // JAXON JVRC models are often very large
+                robot.position.set(0, -1, 0); // Adjust Y for JAXON to stand on ground
+            } else { // hexapod_robot
+                scaleFactor = 10;
+                robot.position.set(0, -2.0 * scaleFactor, 0);
+            }
             robot.scale.set(scaleFactor, scaleFactor, scaleFactor);
-            // Adjust the robot's initial position for better viewing in the scene
-            robot.position.set(0, -2.0 * scaleFactor, 0); // Adjust Y based on robot's height if needed
+
 
             // Call the callback if provided, to notify parent component about the loaded robot
             if (onRobotLoaded) {
                 onRobotLoaded(robot);
             }
         }
-    }, [robot, robotConfig.name, onRobotLoaded]); // Depend on robot, robotConfig.name, and onRobotLoaded
+    }, [robot, robotConfig.name, onRobotLoaded, selectedRobotName]); // Depend on selectedRobotName too
 
     // Effect to update robot joint states and position based on received commands
     useEffect(() => {
-        // Apply commands ONLY if the selected robot is the 'hexapod_robot' AND a command is issued
-        if (selectedRobotName === 'hexapod_robot' && robot && controlMode === 'urdf' && jointStates.cmd) {
-            const rotationAmount = 0.1; // Amount for joint rotation
-            const liftAmount = 0.1;     // Amount for vertical lift (jump)
-            const moveAmount = 0.5;     // Amount for translational movement
+        if (!robot || controlMode !== 'urdf' || !jointStates.cmd) {
+            return; // Exit if no robot, not in URDF mode, or no command
+        }
 
-            // Helper function to safely get a joint's current value
-            const getJointValue = (jointName) => {
-                const joint = robot.joints[jointName];
-                return joint ? (joint.angle || 0) : 0;
-            };
+        const rotationAmount = 0.1; // Amount for joint rotation
+        const liftAmount = 0.1;     // Amount for vertical lift (jump)
+        const moveAmount = 0.5;     // Amount for translational movement
 
-            // Process different control commands for Hexapod Robot
+        // Helper function to safely get a joint's current value
+        const getJointValue = (jointName) => {
+            const joint = robot.joints[jointName];
+            return joint ? (joint.angle || 0) : 0;
+        };
+
+        // --- Hexapod Robot Control Logic ---
+        if (selectedRobotName === 'hexapod_robot') {
             if (jointStates.cmd === 'left') {
-                ['coxa_joint_r1', 'coxa_joint_r2', 'coxa_joint_r3'].forEach(jointName => {
+                ['coxa_joint_r1', 'coxa_joint_r2', 'coxa_joint_r3',
+                 'coxa_joint_l1', 'coxa_joint_l2', 'coxa_joint_l3'].forEach(jointName => {
                     const joint = robot.joints[jointName];
                     if (joint) {
                         joint.setJointValue(getJointValue(jointName) + rotationAmount);
                     }
                 });
-                ['coxa_joint_l1', 'coxa_joint_l2', 'coxa_joint_l3'].forEach(jointName => {
-                    const joint = robot.joints[jointName];
-                    if (joint) {
-                        joint.setJointValue(getJointValue(jointName) - rotationAmount);
-                    }
-                });
-                console.log("Hexapod: Attempting 'left' turn.");
+                console.log("Hexapod: Attempting 'left' (all joints).");
             } else if (jointStates.cmd === 'right') {
-                ['coxa_joint_r1', 'coxa_joint_r2', 'coxa_joint_r3'].forEach(jointName => {
+                ['coxa_joint_r1', 'coxa_joint_r2', 'coxa_joint_r3',
+                'coxa_joint_l1', 'coxa_joint_l2', 'coxa_joint_l3'].forEach(jointName => {
                     const joint = robot.joints[jointName];
                     if (joint) {
                         joint.setJointValue(getJointValue(jointName) - rotationAmount);
                     }
                 });
-                ['coxa_joint_l1', 'coxa_joint_l2', 'coxa_joint_l3'].forEach(jointName => {
-                    const joint = robot.joints[jointName];
-                    if (joint) {
-                        joint.setJointValue(getJointValue(jointName) + rotationAmount);
-                    }
-                });
-                console.log("Hexapod: Attempting 'right' turn.");
+                console.log("Hexapod: Attempting 'right' (all joints).");
             } else if (jointStates.cmd === 'jump') {
                 const allFemurJoints = [
                     'femur_joint_r1', 'femur_joint_r2', 'femur_joint_r3',
@@ -139,11 +139,66 @@ const UrdfRobotModel = ({ jointStates, controlMode, selectedRobotName, onRobotLo
                 robot.position.y -= moveAmount;
                 console.log("Hexapod: Moving down. New Y:", robot.position.y);
             }
-        } else if (selectedRobotName !== 'hexapod_robot' && jointStates.cmd) {
-            console.log(`Command '${jointStates.cmd}' ignored for ${robotConfig.name}. Only Hexapod Robot supports movement.`);
         }
-    }, [jointStates, robot, controlMode, selectedRobotName, robotConfig.name]);
+        // --- JAXON JVRC Control Logic ---
+        else if (selectedRobotName === 'jaxon_jvrc') {
+            // Based on your DAE file names, these are potential joint names.
+            // Actual joint names need to be verified from the JAXON JVRC URDF.
+            // These are speculative movements to demonstrate the concept.
+            const armJoints = [
+                'LARM_JOINT0', 'LARM_JOINT1', 'LARM_JOINT2', 'LARM_JOINT3',
+                'LARM_JOINT4', 'LARM_JOINT5', 'LARM_JOINT6', 'LARM_JOINT7',
+                'RARM_JOINT0', 'RARM_JOINT1', 'RARM_JOINT2', 'RARM_JOINT3',
+                'RARM_JOINT4', 'RARM_JOINT5', 'RARM_JOINT6', 'RARM_JOINT7'
+            ];
+            const headJoints = ['CHEST_JOINT0', 'HEAD_JOINT0']; // Assuming head/neck joints
 
+            if (jointStates.cmd === 'left') {
+                // Rotate chest or arms to simulate left turn/lean
+                const chestJoint = robot.joints['CHEST_JOINT0']; // Common chest yaw joint
+                if (chestJoint) chestJoint.setJointValue(getJointValue('CHEST_JOINT0') + rotationAmount);
+                // Also move left arm forward/up slightly
+                const leftArmShoulderPitch = robot.joints['LARM_JOINT1']; // Common shoulder pitch
+                if (leftArmShoulderPitch) leftArmShoulderPitch.setJointValue(getJointValue('LARM_JOINT1') - rotationAmount);
+                console.log("JAXON JVRC: Attempting 'left' (chest/arm).");
+            } else if (jointStates.cmd === 'right') {
+                // Rotate chest or arms to simulate right turn/lean
+                const chestJoint = robot.joints['CHEST_JOINT0'];
+                if (chestJoint) chestJoint.setJointValue(getJointValue('CHEST_JOINT0') - rotationAmount);
+                // Also move right arm forward/up slightly
+                const rightArmShoulderPitch = robot.joints['RARM_JOINT1'];
+                if (rightArmShoulderPitch) rightArmShoulderPitch.setJointValue(getJointValue('RARM_JOINT1') - rotationAmount);
+                console.log("JAXON JVRC: Attempting 'right' (chest/arm).");
+            } else if (jointStates.cmd === 'up') {
+                // Lift both arms up or move head up
+                headJoints.forEach(jointName => {
+                    const joint = robot.joints[jointName];
+                    if (joint) joint.setJointValue(getJointValue(jointName) + rotationAmount);
+                });
+                const leftArmShoulderRoll = robot.joints['LARM_JOINT2']; // Common shoulder roll (out/in)
+                if (leftArmShoulderRoll) leftArmShoulderRoll.setJointValue(getJointValue('LARM_JOINT2') - rotationAmount);
+                const rightArmShoulderRoll = robot.joints['RARM_JOINT2'];
+                if (rightArmShoulderRoll) rightArmShoulderRoll.setJointValue(getJointValue('RARM_JOINT2') + rotationAmount);
+                console.log("JAXON JVRC: Attempting 'up' (head/arms).");
+            } else if (jointStates.cmd === 'down') {
+                 // Lower both arms down or move head down
+                    headJoints.forEach(jointName => {
+                    const joint = robot.joints[jointName];
+                    if (joint) joint.setJointValue(getJointValue(jointName) - rotationAmount);
+                });
+                const leftArmShoulderRoll = robot.joints['LARM_JOINT2'];
+                if (leftArmShoulderRoll) leftArmShoulderRoll.setJointValue(getJointValue('LARM_JOINT2') + rotationAmount);
+                const rightArmShoulderRoll = robot.joints['RARM_JOINT2'];
+                if (rightArmShoulderRoll) rightArmShoulderRoll.setJointValue(getJointValue('RARM_JOINT2') - rotationAmount);
+                console.log("JAXON JVRC: Attempting 'down' (head/arms).");
+            }
+            // Add more specific JAXON JVRC movements here if you have more commands or want more nuanced control
+            // Example:
+            // else if (jointStates.cmd === 'forward') { /* Move specific JAXON JVRC joints for walking */ }
+        }
+    }, [jointStates, robot, controlMode, selectedRobotName]); // Depend on relevant states for re-evaluation
+
+    // Render the loaded robot model
     return <primitive object={robot} />;
 };
 

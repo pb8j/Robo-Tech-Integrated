@@ -1,4 +1,4 @@
-// frontend/src/components/Navbar.jsx (assuming this is your path)
+// frontend/src/components/Navbar.jsx
 import React from 'react';
 import { Link, NavLink } from 'react-router-dom';
 import { useLogout } from '../hooks/useLogout'; // Import your useLogout hook
@@ -18,6 +18,7 @@ const Navbar = () => {
     { name: 'Partners', path: '/partners' },
     { name: 'Information', path: '/information' },
     { name: 'Tools', path: '/tools' },
+    { name: 'Upload URDF', path: '/upload-urdf' }, // Added new navigation item
   ];
 
   return (

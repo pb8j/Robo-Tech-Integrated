@@ -1,13 +1,18 @@
 // src/pages/controlPanel.jsx
-import React, { useEffect, useRef, useState, Suspense } from "react";
+import React, { useEffect, useRef, useState, Suspense, useCallback } from "react";
 import { io } from "socket.io-client";
 import { Canvas, useLoader } from "@react-three/fiber";
 import URDFLoader from 'urdf-loader';
-import { OrbitControls, Environment, Text } from "@react-three/drei"; // Added Text import
+import { OrbitControls, Environment, Text } from "@react-three/drei";
 import * as THREE from 'three';
 import { useNavigate } from 'react-router-dom';
 
+// Import MediaPipe Hands and CameraUtil
+import { Hands } from '@mediapipe/hands';
+import { Camera } from '@mediapipe/camera_utils';
+
 // Node server URL for Socket.IO and WebRTC signaling
+// Assuming your local backend is running on http://localhost:3001
 const NODE_SERVER_URL = "https://backend-746d.onrender.com";
 
 // Define robot configurations for both models
@@ -77,35 +82,27 @@ const UrdfRobotModel = ({ jointStates, controlMode, selectedRobotName }) => {
 
             // Process different control commands for Hexapod Robot
             if (jointStates.cmd === 'left') {
-                // Rotate right coxa joints positively and left coxa joints negatively for turning
-                ['coxa_joint_r1', 'coxa_joint_r2', 'coxa_joint_r3'].forEach(jointName => {
+                // Rotate all coxa joints positively for a general "left" movement/turn
+                // You may need to fine-tune which joints to move for a desired effect.
+                // For a "left" motion, typically all coxa joints rotate in one direction.
+                ['coxa_joint_r1', 'coxa_joint_r2', 'coxa_joint_r3',
+                'coxa_joint_l1', 'coxa_joint_l2', 'coxa_joint_l3'].forEach(jointName => {
                     const joint = robot.joints[jointName];
                     if (joint) {
                         joint.setJointValue(getJointValue(jointName) + rotationAmount);
                     }
                 });
-                ['coxa_joint_l1', 'coxa_joint_l2', 'coxa_joint_l3'].forEach(jointName => {
-                    const joint = robot.joints[jointName];
-                    if (joint) {
-                        joint.setJointValue(getJointValue(jointName) - rotationAmount);
-                    }
-                });
-                console.log("Hexapod: Attempting 'left' turn.");
+                console.log("Hexapod: Attempting 'left' (all joints).");
             } else if (jointStates.cmd === 'right') {
-                // Rotate right coxa joints negatively and left coxa joints positively for turning
-                ['coxa_joint_r1', 'coxa_joint_r2', 'coxa_joint_r3'].forEach(jointName => {
+                // Rotate all coxa joints negatively for a general "right" movement/turn
+                ['coxa_joint_r1', 'coxa_joint_r2', 'coxa_joint_r3',
+                'coxa_joint_l1', 'coxa_joint_l2', 'coxa_joint_l3'].forEach(jointName => {
                     const joint = robot.joints[jointName];
                     if (joint) {
                         joint.setJointValue(getJointValue(jointName) - rotationAmount);
                     }
                 });
-                ['coxa_joint_l1', 'coxa_joint_l2', 'coxa_joint_l3'].forEach(jointName => {
-                    const joint = robot.joints[jointName];
-                    if (joint) {
-                        joint.setJointValue(getJointValue(jointName) + rotationAmount);
-                    }
-                });
-                console.log("Hexapod: Attempting 'right' turn.");
+                console.log("Hexapod: Attempting 'right' (all joints).");
             } else if (jointStates.cmd === 'jump') {
                 const allFemurJoints = [
                     'femur_joint_r1', 'femur_joint_r2', 'femur_joint_r3',
@@ -166,6 +163,12 @@ const ControlPanel = () => {
     const peerConnection = useRef(null);
     const socket = useRef(null);
 
+    // MediaPipe Hands specific refs and state
+    const hands = useRef(null);
+    const camera = useRef(null);
+    const [handGesture, setHandGesture] = useState('None'); // State to store recognized hand gesture
+    const lastCommandTime = useRef(0); // To debounce commands
+
     // State variables for UI and connection management
     const [availablePhones, setAvailablePhones] = useState([]); // List of connected phones
     const [selectedPhoneId, setSelectedPhoneId] = useState(""); // Currently selected phone for control/stream
@@ -184,10 +187,130 @@ const ControlPanel = () => {
         setShowModal(true);
     };
 
-    // Effect for Socket.IO setup on component mount
+    // Helper function to calculate distance between two 3D points
+    const distance = (p1, p2) => {
+        return Math.sqrt(
+            Math.pow(p2.x - p1.x, 2) +
+            Math.pow(p2.y - p1.y, 2) +
+            Math.pow(p2.z - p1.z, 2)
+        );
+    };
+
+    // Gesture Recognition Logic - UPDATED FOR OPEN_PALM_UP AND OPEN_PALM PRIORITY
+    const recognizeGesture = useCallback((landmarks) => {
+        if (!landmarks || landmarks.length === 0) return 'None';
+
+        const thumbTip = landmarks[4];
+        const indexTip = landmarks[8];
+        const middleTip = landmarks[12];
+        const ringTip = landmarks[16];
+        const pinkyTip = landmarks[20];
+        const wrist = landmarks[0];
+
+        const isFingerOpen = (tip, base) => distance(tip, base) > 0.08; 
+        const isFingerClosed = (tip, base) => distance(tip, base) < 0.05; 
+
+
+        const allFingersExtended =
+            isFingerOpen(thumbTip, landmarks[2]) &&
+            isFingerOpen(indexTip, landmarks[6]) &&
+            isFingerOpen(middleTip, landmarks[10]) &&
+            isFingerOpen(ringTip, landmarks[14]) &&
+            isFingerOpen(pinkyTip, landmarks[18]);
+
+        const isPalmFacingUp = indexTip.y < wrist.y && middleTip.y < wrist.y && ringTip.y < wrist.y;
+
+        if (allFingersExtended && isPalmFacingUp) {
+            return 'Open_Palm_Up';
+        }
+
+        // Check for GENERAL OPEN PALM (all fingers extended, but not necessarily pointing up)
+        if (allFingersExtended) {
+            return 'Open_Palm'; // This will be our "move right" gesture
+        }
+
+        // --- Other gestures (less priority/reliability, adjust as needed) ---
+
+        // Check for a 'fist'
+        const allFingersClosed =
+            isFingerClosed(thumbTip, landmarks[2]) &&
+            isFingerClosed(indexTip, landmarks[6]) &&
+            isFingerClosed(middleTip, landmarks[10]) &&
+            isFingerClosed(ringTip, landmarks[14]) &&
+            isFingerClosed(pinkyTip, landmarks[18]);
+        if (allFingersClosed) {
+            return 'Fist';
+        }
+
+        // Example: 'Point Up' (index finger extended, others closed)
+        const isIndexUp = isFingerOpen(indexTip, landmarks[6]) && indexTip.y < landmarks[5].y;
+        const otherFingersBentForPoint =
+            isFingerClosed(thumbTip, landmarks[2]) &&
+            isFingerClosed(middleTip, landmarks[10]) &&
+            isFingerClosed(ringTip, landmarks[14]) &&
+            isFingerClosed(pinkyTip, landmarks[18]);
+        if (isIndexUp && otherFingersBentForPoint) {
+            return 'Point_Up';
+        }
+
+        return 'None'; // Default
+    }, []);
+
+
+    // Effect for Socket.IO and MediaPipe setup on component mount
     useEffect(() => {
         // Initialize Socket.IO connection
         socket.current = io(NODE_SERVER_URL);
+
+        // Initialize MediaPipe Hands
+        hands.current = new Hands({
+            locateFile: (file) => {
+                return `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`;
+            }
+        });
+
+        hands.current.setOptions({
+            maxNumHands: 1, // Detect one hand for simplicity
+            modelComplexity: 1, // 0 (fastest) to 1 (accurate)
+            minDetectionConfidence: 0.8,
+            minTrackingConfidence: 0.7
+        });
+
+        hands.current.onResults((results) => {
+            if (displayMode === 'video' && remoteVideoRef.current && results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
+                const landmarks = results.multiHandLandmarks[0]; // Get landmarks for the first detected hand
+                const gesture = recognizeGesture(landmarks);
+                setHandGesture(gesture); // Update state with the recognized gesture
+
+                // Debounce commands to avoid sending too many too quickly
+                const now = Date.now();
+                if (now - lastCommandTime.current > 500) { // 500ms debounce
+                    let commandToSend = null;
+                    // UPDATED GESTURE MAPPING FOR OPEN_PALM_UP AND OPEN_PALM
+                    if (gesture === 'Open_Palm_Up') {
+                        commandToSend = 'left'; // Map Open_Palm_Up to 'left'
+                    } else if (gesture === 'Open_Palm') {
+                        commandToSend = 'right'; // Map Open_Palm to 'right'
+                    }
+                    // You can add more mappings here if other gestures become reliable
+                    else if (gesture === 'Point_Up') {
+                        commandToSend = 'up'; // Example: Point_Up for 'up' movement
+                    }
+                    else if (gesture === 'Fist') {
+                        // commandToSend = 'stop'; // Example for 'stop'
+                    }
+
+
+                    if (commandToSend && selectedRobotName === 'hexapod_robot') { // Only send if hexapod is selected
+                        sendCommand(commandToSend, 'gesture'); // Indicate command came from gesture
+                        lastCommandTime.current = now;
+                    }
+                }
+            } else {
+                setHandGesture('None'); // No hand detected or not in video mode
+            }
+        });
+
 
         // Socket.IO event listeners
         socket.current.on("connect", () => {
@@ -233,9 +356,12 @@ const ControlPanel = () => {
         socket.current.on("disconnect", () => {
             setStatus("Disconnected from server.");
             console.log("Laptop: Disconnected from server.");
+            if (camera.current) {
+                camera.current.stop(); // Stop MediaPipe Camera when socket disconnects
+            }
         });
 
-        // Cleanup function for useEffect: close peer connection, disconnect socket
+        // Cleanup function for useEffect: close peer connection, disconnect socket, stop MediaPipe Camera
         return () => {
             if (peerConnection.current) {
                 peerConnection.current.close();
@@ -244,8 +370,40 @@ const ControlPanel = () => {
             if (socket.current) {
                 socket.current.disconnect();
             }
+            if (camera.current) {
+                camera.current.stop();
+            }
+            if (hands.current) {
+                hands.current.close();
+            }
         };
-    }, []); // Empty dependency array means this runs once on mount and cleans up on unmount
+    }, [displayMode, selectedRobotName, recognizeGesture]); // Add recognizeGesture to dependencies
+
+    // Effect to run MediaPipe Camera when a video stream is active
+    useEffect(() => {
+        if (remoteVideoRef.current && displayMode === 'video' && hands.current) {
+            // Stop any existing camera instance
+            if (camera.current) {
+                camera.current.stop();
+            }
+            // Initialize new Camera instance with the remote video stream
+            camera.current = new Camera(remoteVideoRef.current, {
+                onFrame: async () => {
+                    if (remoteVideoRef.current && remoteVideoRef.current.readyState === 4) { // Ensure video is ready
+                        await hands.current.send({ image: remoteVideoRef.current });
+                    }
+                },
+                width: 640,
+                height: 480
+            });
+            camera.current.start();
+            console.log("MediaPipe Camera started for remote video stream.");
+        } else if (camera.current) {
+            camera.current.stop(); // Stop camera if not in video mode or video ref is null
+            console.log("MediaPipe Camera stopped.");
+            setHandGesture('None'); // Clear gesture when camera stops
+        }
+    }, [displayMode, selectedPhoneId]); // Depend on displayMode and selectedPhoneId to re-init camera
 
     /**
      * Sets up the WebRTC peer connection.
@@ -344,11 +502,14 @@ const ControlPanel = () => {
     /**
      * Sends a control command to the selected phone or updates local URDF.
      * @param {string} cmd - The control command (e.g., 'forward', 'jump').
+     * @param {string} source - 'button' or 'gesture' to indicate command origin.
      */
-    const sendCommand = (cmd) => {
+    const sendCommand = (cmd, source = 'button') => {
         // Only allow commands if Hexapod Robot is selected
         if (selectedRobotName !== 'hexapod_robot') {
-            showCustomModal(`Movement commands are only supported for the ${ROBOT_MODELS.hexapod_robot.name}.`);
+            if (source === 'button') { // Only show modal for button clicks
+                showCustomModal(`Movement commands are only supported for the ${ROBOT_MODELS.hexapod_robot.name}.`);
+            }
             return;
         }
 
@@ -358,7 +519,9 @@ const ControlPanel = () => {
         } else {
             // If in video mode, send command to the selected phone
             if (!selectedPhoneId) {
-                showCustomModal("Please select a phone to control.");
+                if (source === 'button') { // Only show modal for button clicks
+                    showCustomModal("Please select a phone to control.");
+                }
                 return;
             }
             if (socket.current) {
@@ -461,11 +624,13 @@ const ControlPanel = () => {
                     <>
                         {selectedPhoneId ? (
                             <div className="relative w-full aspect-video bg-gray-700 rounded-lg overflow-hidden shadow-inner mb-6 border border-gray-600">
+                                {/* The video element for the remote stream */}
                                 <video
                                     ref={remoteVideoRef}
                                     autoPlay
                                     playsInline
                                     className="w-full h-full object-contain block"
+                                    style={{ transform: 'scaleX(-1)' }} // Mirror the video for intuitive hand tracking
                                 />
                                 {overlayOn && (
                                     <div className="absolute inset-0 bg-gray-900 bg-opacity-95 text-white text-xl font-bold flex items-center justify-center rounded-lg">
@@ -485,6 +650,10 @@ const ControlPanel = () => {
                                 {overlayOn ? "Turn On Stream View" : "Turn Off Stream View"}
                             </button>
                         )}
+                        {/* Display Hand Gesture */}
+                        <p className="text-gray-300 text-xl font-bold mt-4">
+                            Detected Gesture: <span className="text-yellow-400">{handGesture}</span>
+                        </p>
                     </>
                 )}
 

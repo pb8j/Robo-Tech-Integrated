@@ -4,6 +4,7 @@ import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-d
 import Navbar from './components/Navbar';
 import Footer from './components/footer';
 import HomePage from './pages/HomePage';
+import UrdfUploader from './pages/UrdfUploader'; // Adjust path if needed
 import ProductsPage from './pages/ProductsPage';
 import ControlPanel from './pages/controlPanel'; // Using lowercase 'c'
 import ContactUsPage from './pages/ContactUsPage';
@@ -54,6 +55,9 @@ function App() {
                         element={user ? <ProductsPage /> : <Navigate to="/login" />}
                     />
                     <Route path="/send-otp" element={<OtpSender />} />
+                    
+                    <Route path="/upload-urdf" element={<UrdfUploader />} /> {/* New Route */}
+
                     <Route
                         path="/contact"
                         element={user ? <ContactUsPage /> : <Navigate to="/login" />}

@@ -1,9 +1,9 @@
 // src/pages/PhoneCam.jsx
-import React, { useEffect, useRef, useState, Suspense } from "react";
+import React, { useEffect, useRef, useState, Suspense, useCallback } from "react"; // Added useCallback
 import { io } from "socket.io-client";
 import { Canvas, useLoader } from "@react-three/fiber";
 import URDFLoader from 'urdf-loader';
-import { OrbitControls, Environment, Text } from "@react-three/drei"; // Added Text import
+import { OrbitControls, Environment, Text } from "@react-three/drei";
 import * as THREE from 'three';
 
 // Node server URL for Socket.IO and WebRTC signaling
@@ -185,21 +185,55 @@ const PhoneCam = () => {
 
     // State to hold the loaded robot object for camera adjustments
     const [loadedRobot, setLoadedRobot] = useState(null);
+    // State to hold the local media stream
+    const [localStream, setLocalStream] = useState(null); // Managed separately
 
     // Callback when the URDF robot model finishes loading
     const handleRobotLoaded = (robotObject) => {
         setLoadedRobot(robotObject);
     };
 
-    // Effect for Socket.IO and WebRTC setup on component mount
+    // Function to get local media stream (camera and microphone)
+    // Memoize with useCallback to prevent unnecessary re-creations
+    const getLocalStream = useCallback(async () => {
+        if (localStream) return localStream; // Return existing stream if already acquired
+        try {
+            const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+            if (localVideoRef.current) {
+                localVideoRef.current.srcObject = stream;
+            }
+            setLocalStream(stream); // Store the stream in state
+            return stream;
+        } catch (err) {
+            setStatus(`Camera access denied or unavailable: ${err.message}`);
+            console.error("Camera error:", err);
+            const messageBox = document.createElement('div');
+            messageBox.style.cssText = `
+                position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%);
+                background-color: #fff; padding: 20px; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.2);
+                z-index: 1000; text-align: center; color: #333; font-family: sans-serif;
+            `;
+            messageBox.innerHTML = `
+                <p>Camera access denied or unavailable. Please allow camera permissions.</p>
+                <button onclick="this.parentNode.remove()" style="margin-top: 15px; padding: 8px 15px; background-color: #007bff; color: white; border: none; border-radius: 5px; cursor: pointer;">OK</button>
+            `;
+            document.body.appendChild(messageBox);
+            return null;
+        }
+    }, [localStream]); // Dependency on localStream to ensure it doesn't try to get a new one if already available
+
+    // Effect for Socket.IO setup on component mount
     useEffect(() => {
         // Initialize Socket.IO connection
         socket.current = io(NODE_SERVER_URL);
 
+        // Request local stream immediately when the component mounts
+        // This ensures the camera is active regardless of display mode.
+        getLocalStream();
+
         // Socket.IO event listeners
         socket.current.on("connect", () => {
             setStatus("Connected to server. Registering phone...");
-            // Emit registration event with the unique device ID
             socket.current.emit("register_phone", PHONE_DEVICE_ID);
         });
 
@@ -211,13 +245,19 @@ const PhoneCam = () => {
         socket.current.on("start_webrtc_offer", async ({ requestingLaptopSocketId }) => {
             setStatus("Laptop requested stream. Setting up WebRTC...");
             // Set up WebRTC peer connection and send SDP offer
-            await setupPeerConnection(requestingLaptopSocketId);
-            setCallActive(true);
+            // Pass the localStream to setupPeerConnection
+            const currentStream = await getLocalStream(); // Ensure stream is available
+            if (currentStream) {
+                await setupPeerConnection(requestingLaptopSocketId, currentStream);
+                setCallActive(true);
+            } else {
+                console.error("Cannot setup WebRTC: Local stream not available.");
+                setStatus("Error: Cannot start streaming. Camera not accessible.");
+            }
         });
 
         socket.current.on("sdp_answer_from_laptop", async (sdpAnswer) => {
             setStatus("Received SDP Answer. Establishing connection...");
-            // Set the remote description if not already set (answer from laptop)
             if (peerConnection.current && peerConnection.current.remoteDescription === null) {
                 await peerConnection.current.setRemoteDescription(new RTCSessionDescription(sdpAnswer));
                 console.log("Phone: Remote description set (Answer).");
@@ -225,7 +265,6 @@ const PhoneCam = () => {
         });
 
         socket.current.on("ice_candidate_from_laptop", async (candidate) => {
-            // Add remote ICE candidate to peer connection
             if (peerConnection.current && candidate) {
                 await peerConnection.current.addIceCandidate(candidate);
                 console.log("Phone: Added remote ICE candidate.");
@@ -236,136 +275,93 @@ const PhoneCam = () => {
             setStatus(`Command received: ${cmd}`);
             // Only update joint states if in URDF mode and for the hexapod robot
             if (displayMode === 'urdf' && selectedRobotName === 'hexapod_robot') {
-                setJointStates({ cmd: cmd, timestamp: Date.now() }); // Update with command and a timestamp to force effect re-run
+                setJointStates({ cmd: cmd, timestamp: Date.now() });
             }
         });
 
         socket.current.on("disconnect", () => {
             setStatus("Disconnected from server.");
             console.log("Phone: Disconnected from server.");
-            setCallActive(false); // Deactivate call on disconnect
+            setCallActive(false);
+            // Do NOT stop localStream here. Keep it active.
         });
 
-        // Function to get local media stream (camera and microphone)
-        const getLocalStream = async () => {
-            try {
-                const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
-                if (localVideoRef.current) {
-                    localVideoRef.current.srcObject = stream;
-                }
-                return stream;
-            } catch (err) {
-                setStatus(`Camera access denied or unavailable: ${err.message}`);
-                console.error("Camera error:", err);
-                // Use a custom modal or message box instead of alert()
-                const messageBox = document.createElement('div');
-                messageBox.style.cssText = `
-                    position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%);
-                    background-color: #fff; padding: 20px; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.2);
-                    z-index: 1000; text-align: center; color: #333; font-family: sans-serif;
-                `;
-                messageBox.innerHTML = `
-                    <p>Camera access denied or unavailable. Please allow camera permissions.</p>
-                    <button onclick="this.parentNode.remove()" style="margin-top: 15px; padding: 8px 15px; background-color: #007bff; color: white; border: none; border-radius: 5px; cursor: pointer;">OK</button>
-                `;
-                document.body.appendChild(messageBox);
-                return null;
-            }
-        };
-
-        let localStream = null;
-        // Request local stream when component mounts
-        getLocalStream().then(stream => {
-            localStream = stream;
-        });
-
-        // Cleanup function for useEffect: close peer connection, stop tracks, disconnect socket
+        // Cleanup function for useEffect: close peer connection, disconnect socket
         return () => {
             if (peerConnection.current) {
                 peerConnection.current.close();
                 peerConnection.current = null;
             }
-            if (localStream) {
-                localStream.getTracks().forEach(track => track.stop());
-            }
+            // IMPORTANT: Do NOT stop localStream tracks here.
+            // The localStream should persist across mode changes.
             if (socket.current) {
                 socket.current.disconnect();
             }
         };
-    }, [displayMode, selectedRobotName]); // Re-run effect if displayMode or selectedRobotName changes
+    }, [getLocalStream, displayMode, selectedRobotName]); // Added getLocalStream to dependencies
 
     // Effect to adjust camera and orbit controls when the robot model is loaded in URDF mode
     useEffect(() => {
         if (displayMode === 'urdf' && loadedRobot && orbitControlsRef.current && cameraRef.current) {
             console.log("Adjusting camera and orbit controls for the loaded robot...");
-            // Calculate bounding box of the loaded robot
             const box = new THREE.Box3().setFromObject(loadedRobot);
             const center = box.getCenter(new THREE.Vector3());
             const size = box.getSize(new THREE.Vector3());
 
-            // Determine max dimension for camera distance calculation
             const maxDim = Math.max(size.x, size.y, size.z);
-            const fov = cameraRef.current.fov * (Math.PI / 180); // Convert FOV to radians
+            const fov = cameraRef.current.fov * (Math.PI / 180);
             let cameraZ = Math.abs(maxDim / 2 / Math.tan(fov / 2));
 
-            // Adjust camera distance for better view, and slightly above the robot
-            cameraZ *= 1.5; // Zoom out a bit
-            // Position camera relative to the robot's center and adjusted height
+            cameraZ *= 1.5;
             cameraRef.current.position.set(center.x, center.y + size.y / 2, cameraZ + center.z);
-            cameraRef.current.lookAt(center); // Make camera look at the robot's center
+            cameraRef.current.lookAt(center);
 
-            // Update OrbitControls target to the robot's center
             orbitControlsRef.current.target.copy(center);
             orbitControlsRef.current.update();
 
-            // Adjust camera clipping planes based on scene size for better rendering
             cameraRef.current.far = cameraZ * 2;
             cameraRef.current.near = 0.01;
             cameraRef.current.updateProjectionMatrix();
 
             console.log("Camera adjusted to center:", center, "and position:", cameraRef.current.position);
         }
-    }, [displayMode, loadedRobot]); // Depend on displayMode and loadedRobot
+    }, [displayMode, loadedRobot]);
 
     /**
      * Sets up the WebRTC peer connection.
      * @param {string} requestingLaptopSocketId - The socket ID of the laptop requesting the stream.
+     * @param {MediaStream} stream - The local media stream to add to the peer connection.
      */
-    const setupPeerConnection = async (requestingLaptopSocketId) => {
-        // Close existing peer connection if any
+    const setupPeerConnection = async (requestingLaptopSocketId, stream) => {
         if (peerConnection.current) {
             peerConnection.current.close();
         }
 
-        // Create a new RTCPeerConnection instance
         const pc = new RTCPeerConnection({
             iceServers: [
-                { urls: 'stun:stun.l.google.com:19302' }, // Google's public STUN server
+                { urls: 'stun:stun.l.google.com:19302' },
             ]
         });
         peerConnection.current = pc;
 
-        // Event listener for ICE connection state changes
         pc.oniceconnectionstatechange = () => {
             console.log('Phone ICE connection state:', pc.iceConnectionState);
             setStatus(`ICE State: ${pc.iceConnectionState}`);
         };
 
-        // Add local video tracks to the peer connection
-        if (localVideoRef.current && localVideoRef.current.srcObject) {
-            localVideoRef.current.srcObject.getTracks().forEach(track => pc.addTrack(track, localVideoRef.current.srcObject));
-            console.log("Phone: Local stream added to PeerConnection.");
+        // Add local video tracks to the peer connection only when setting up connection
+        if (stream) {
+            stream.getTracks().forEach(track => pc.addTrack(track, stream));
+            console.log("Phone: Local stream tracks added to PeerConnection.");
         } else {
-            console.error("Phone: No local stream found to add to PeerConnection.");
+            console.error("Phone: No stream provided to add to PeerConnection.");
             setStatus("Error: No local stream to start WebRTC. Please allow camera permissions.");
             return;
         }
 
-        // Event listener for ICE candidates (network information)
         pc.onicecandidate = (event) => {
             if (event.candidate) {
                 console.log("Phone: Sending ICE candidate to laptop.");
-                // Emit ICE candidate to the laptop via Socket.IO
                 socket.current.emit("ice_candidate_from_phone", {
                     candidate: event.candidate,
                     phoneDeviceId: PHONE_DEVICE_ID,
@@ -375,11 +371,9 @@ const PhoneCam = () => {
         };
 
         try {
-            // Create and set local SDP offer
             const offer = await pc.createOffer();
             await pc.setLocalDescription(offer);
             console.log("Phone: Sending SDP Offer to laptop.");
-            // Emit SDP offer to the laptop via Socket.IO
             socket.current.emit("sdp_offer_from_phone", {
                 sdpOffer: offer,
                 phoneDeviceId: PHONE_DEVICE_ID,
@@ -432,12 +426,10 @@ const PhoneCam = () => {
             )}
 
             {/* Video Stream Container (visible in 'video' mode) */}
-            {displayMode === 'video' && (
-                <div style={styles.videoContainer}>
-                    {/* The `muted` attribute is important for autoplay in many browsers */}
-                    <video ref={localVideoRef} autoPlay playsInline muted style={styles.videoStream} />
-                </div>
-            )}
+            <div style={{ ...styles.videoContainer, display: displayMode === 'video' ? 'block' : 'none' }}>
+                <video ref={localVideoRef} autoPlay playsInline muted style={styles.videoStream} />
+            </div>
+
 
             {/* URDF Robot Container (visible in 'urdf' mode) */}
             {displayMode === 'urdf' && (
@@ -457,8 +449,8 @@ const PhoneCam = () => {
                             <UrdfRobotModel
                                 jointStates={jointStates}
                                 controlMode={displayMode}
-                                onRobotLoaded={handleRobotLoaded} // Pass callback for camera adjustment
-                                selectedRobotName={selectedRobotName} // Pass selected robot name
+                                onRobotLoaded={handleRobotLoaded}
+                                selectedRobotName={selectedRobotName}
                             />
                         </Suspense>
                         {/* OrbitControls for interactive camera manipulation */}
@@ -473,9 +465,9 @@ const PhoneCam = () => {
 // Styles object for the PhoneCam component
 const styles = {
     container: {
-        padding: '20px', // Slightly reduced padding for mobile
-        maxWidth: '95%', // Increased max-width to use more screen real estate
-        margin: '20px auto', // Adjusted margin
+        padding: '20px',
+        maxWidth: '95%',
+        margin: '20px auto',
         textAlign: 'center',
         fontFamily: "'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif",
         backgroundColor: "#ffffff",
@@ -483,54 +475,54 @@ const styles = {
         boxShadow: "0 8px 25px rgba(0,0,0,0.15)",
         background: 'linear-gradient(145deg, #f0f0f0, #ffffff)',
         border: '1px solid #e0e0e0',
-        boxSizing: 'border-box', // Include padding and border in the element's total width and height
+        boxSizing: 'border-box',
     },
     heading: {
         color: '#2c3e50',
-        marginBottom: '15px', // Reduced margin
-        fontSize: '1.8em', // Adjusted font size for mobile
+        marginBottom: '15px',
+        fontSize: '1.8em',
         fontWeight: '700',
-        letterSpacing: '0.5px', // Slightly reduced letter spacing
+        letterSpacing: '0.5px',
     },
     statusText: {
-        fontSize: '1em', // Adjusted font size
+        fontSize: '1em',
         color: '#555',
-        marginBottom: '8px', // Reduced margin
+        marginBottom: '8px',
     },
     statusValue: {
         fontWeight: 'bold',
         color: '#007bff',
     },
     deviceIdText: {
-        fontSize: '0.9em', // Adjusted font size
+        fontSize: '0.9em',
         color: '#777',
-        marginBottom: '20px', // Reduced margin
-        wordBreak: 'break-all', // Ensure long device IDs wrap on small screens
+        marginBottom: '20px',
+        wordBreak: 'break-all',
     },
     deviceIdValue: {
         color: '#34495e',
     },
     modeToggleContainer: {
-        marginBottom: '20px', // Reduced margin
+        marginBottom: '20px',
         display: 'flex',
-        flexWrap: 'wrap', // Allow buttons to wrap on smaller screens
+        flexWrap: 'wrap',
         justifyContent: 'center',
-        gap: '10px', // Reduced gap between buttons
+        gap: '10px',
     },
     modeButton: {
-        padding: '10px 20px', // Reduced padding
+        padding: '10px 20px',
         border: '2px solid #007bff',
-        borderRadius: '25px', // Slightly smaller border-radius
+        borderRadius: '25px',
         backgroundColor: '#ffffff',
         color: '#007bff',
         cursor: 'pointer',
-        fontSize: '0.9em', // Adjusted font size
+        fontSize: '0.9em',
         fontWeight: '600',
         transition: 'all 0.3s ease',
         outline: 'none',
         boxShadow: '0 2px 5px rgba(0, 123, 255, 0.2)',
-        flexGrow: 1, // Allow buttons to grow and fill space
-        maxWidth: 'calc(50% - 10px)', // Limit width for two columns on wider mobile screens
+        flexGrow: 1,
+        maxWidth: 'calc(50% - 10px)',
     },
     modeButtonActive: {
         backgroundColor: '#007bff',
@@ -538,7 +530,7 @@ const styles = {
         borderColor: '#0056b3',
         boxShadow: '0 4px 10px rgba(0, 123, 255, 0.4)',
     },
-    robotSelectContainer: { // New style for robot selection dropdown container
+    robotSelectContainer: {
         marginBottom: '20px',
         display: 'flex',
         alignItems: 'center',
@@ -546,12 +538,12 @@ const styles = {
         gap: '10px',
         flexWrap: 'wrap',
     },
-    label: { // Reused from previous styles
+    label: {
         fontSize: '1em',
         color: '#555',
         fontWeight: 'bold',
     },
-    select: { // Reused from previous styles, adjusted for mobile if necessary
+    select: {
         padding: '8px 15px',
         borderRadius: '8px',
         border: '1px solid #a0a0a0',
@@ -572,21 +564,21 @@ const styles = {
         borderRadius: '10px',
         overflow: 'hidden',
         boxShadow: '0 4px 15px rgba(0,0,0,0.08)',
-        width: '100%', // Make video container fill parent width
-        height: 'auto', // Allow height to adjust
-        aspectRatio: '16 / 9', // Maintain a 16:9 aspect ratio for the video container
+        width: '100%',
+        height: 'auto',
+        aspectRatio: '16 / 9',
         margin: '0 auto',
         backgroundColor: '#f5f5f5',
     },
     videoStream: {
         width: '100%',
-        height: '100%', // Make video fill its container
+        height: '100%',
         display: 'block',
-        objectFit: 'cover', // Cover the container while maintaining aspect ratio
+        objectFit: 'cover',
     },
     urdfContainer: {
-        width: '100%', // Make URDF container fill parent width
-        height: '300px', // Fixed height for URDF container, you might adjust this
+        width: '100%',
+        height: '300px',
         border: '2px solid #e0e0e0',
         borderRadius: '10px',
         margin: '0 auto',
@@ -595,12 +587,11 @@ const styles = {
         boxShadow: '0 4px 15px rgba(0,0,0,0.08)',
     },
     '@media (max-width: 480px)': {
-        // Specific adjustments for very small screens
         modeButton: {
-            maxWidth: '100%', // Stack buttons on top of each other on very small screens
+            maxWidth: '100%',
         },
         urdfContainer: {
-            height: '250px', // Reduce height for very small screens
+            height: '250px',
         }
     }
 };

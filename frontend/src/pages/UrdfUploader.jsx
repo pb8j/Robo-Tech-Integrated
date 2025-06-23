@@ -25,25 +25,27 @@ const CameraUpdater = ({ loadedRobotInstanceRef, triggerUpdate }) => {
             const center = box.getCenter(new THREE.Vector3());
             const size = box.getSize(new THREE.Vector3());
 
-            // Calculate a suitable camera distance based on the robot's size
+            // Calculate a suitable camera distance based on the robot's largest dimension
             const maxDim = Math.max(size.x, size.y, size.z);
             const fov = camera.fov * (Math.PI / 180);
             let cameraDistance = maxDim / (2 * Math.tan(fov / 2));
-            cameraDistance *= 1.8; // Adjust multiplier for desired distance
+            cameraDistance *= 1.8; // Adjust multiplier for desired distance and framing
 
-            // Set camera position to view the robot from its "front" relative to its bounding box center
-            // Assuming robot's front is along -Z or +Z axis, and positive X is right, positive Y is up.
-            // We want to be at X=center.x, Y=center.y + (some height), Z=center.z + cameraDistance
-            // This places the camera directly in front of the robot (looking towards -Z by default)
-            // You might need to experiment with +/- Z, X, Y components based on your specific URDF's orientation.
-            camera.position.set(center.x, center.y + size.y / 2 + (maxDim * 0.5), center.z + cameraDistance); // Adjusted Y for better overhead view if needed
-            camera.lookAt(center); // Always look at the center of the robot
+            // Set camera position dynamically around the center, overriding fixed Canvas position if needed
+            // This ensures OrbitControls starts from an appropriate distance and angle
+            // Positioned to look slightly down on the robot from the front-right
+            camera.position.set(
+                center.x + cameraDistance * 0.5, // Slightly to the right
+                center.y + size.y * 0.7,         // Significantly above the base
+                center.z + cameraDistance        // In front
+            );
+            camera.lookAt(center); // Always look at the robot's center
 
-            // Update OrbitControls target to the robot's center
+            // Set OrbitControls target to the robot's center for proper rotation pivot
             orbitControlsRef.current.target.copy(center);
-            orbitControlsRef.current.update();
+            orbitControlsRef.current.update(); // Update controls to apply changes
 
-            // Adjust camera frustum
+            // Adjust camera frustum for optimal viewing
             camera.far = cameraDistance * 3;
             camera.near = 0.001;
             camera.updateProjectionMatrix();
@@ -52,7 +54,13 @@ const CameraUpdater = ({ loadedRobotInstanceRef, triggerUpdate }) => {
         }
     }, [loadedRobotInstanceRef, triggerUpdate, camera]);
 
-    return <OrbitControls ref={orbitControlsRef} />;
+    return (
+        <OrbitControls
+            ref={orbitControlsRef}
+            enableDamping={true} // Enable damping for smoother rotation
+            dampingFactor={0.05} // Adjust damping factor for desired smoothness
+        />
+    );
 };
 
 
@@ -194,14 +202,33 @@ const UrdfRobotModel = ({
             console.log("Available Joints:", Object.keys(robotLoadedInstance.joints));
 
             robotRef.current = robotLoadedInstance;
-            robotLoadedInstance.scale.set(scale, scale, scale);
-            robotLoadedInstance.position.set(...initialPosition);
+
+            // Apply global rotation for JAXON JVRC to stand upright
+            if (selectedRobotName === 'jaxon_jvrc') {
+                // Rotate JAXON from its default orientation (often Z-up, but on its side) to Y-up
+                // Common rotation is -PI/2 around X axis.
+                robotLoadedInstance.rotation.x = -Math.PI / 2; // Rotate -90 degrees on X to stand up
+                console.log("[UrdfRobotModel] JAXON JVRC: Applied initial upright rotation (X: -PI/2).");
+                // Adjust scale for JAXON
+                robotLoadedInstance.scale.set(0.001, 0.001, 0.001);
+            } else {
+                 robotLoadedInstance.scale.set(scale, scale, scale); // Apply prop scale for others
+            }
+
+
+            // Adjust position AFTER rotation and scaling to put base on origin
+            const box = new THREE.Box3().setFromObject(robotLoadedInstance);
+            const center = box.getCenter(new THREE.Vector3());
+            // Position robot to sit on the origin plane (y=0)
+            robotLoadedInstance.position.set(initialPosition[0] - center.x, initialPosition[1] - box.min.y, initialPosition[2] - center.z);
+            console.log("Robot positioned to origin and scaled.");
+
 
             if (onRobotLoaded) {
                 onRobotLoaded(robotLoadedInstance);
             }
         }
-    }, [robotLoadedInstance, onRobotLoaded, scale, initialPosition]);
+    }, [robotLoadedInstance, onRobotLoaded, scale, initialPosition, selectedRobotName]); // Add selectedRobotName to deps
 
     useEffect(() => {
         const robot = robotRef.current;
@@ -633,8 +660,6 @@ const UrdfUploader = () => {
             return new Promise((resolve, reject) => {
                 const reader = new FileReader();
                 reader.onload = (event) => {
-                    // Store the ArrayBuffer as the value.
-                    // Key is the original filename.
                     newMeshMap.set(file.name, event.target.result);
                     console.log(`[UrdfUploader] Stored mesh in map: "${file.name}"`);
                     resolve();
@@ -860,8 +885,11 @@ const UrdfUploader = () => {
 
                 {/* URDF Robot Display */}
                 {robotLoadRequested && urdfFile && meshFiles.size > 0 ? (
-                    <div className="w-full md:w-1/2 aspect-[4/3] h-[600px] bg-gray-700 rounded-lg overflow-hidden shadow-inner border border-gray-600"> {/* Increased height */}
-                        <Canvas camera={{ position: [1, 1, 1], fov: 75 }}>
+                    <div className="w-full md:w-1/2 aspect-[4/3] h-[600px] bg-gray-700 rounded-lg overflow-hidden shadow-inner border border-gray-600">
+                        <Canvas
+                            // Use your suggested camera position to face the robot
+                            camera={{ position: [0, 1.5, 3], fov: 50 }} 
+                        >
                             <ambientLight intensity={0.8} />
                             <directionalLight position={[2, 5, 2]} intensity={1} />
                             <directionalLight position={[-2, -5, -2]} intensity={0.5} />
@@ -873,10 +901,11 @@ const UrdfUploader = () => {
                                     jointStates={robotJointStates}
                                     onRobotLoaded={handleUrdfRobotLoaded}
                                     selectedRobotName="jaxon_jvrc" // Assuming JAXON for hand control
-                                    scale={0.001} // Scale for JAXON JVRC
-                                    initialPosition={[0, -1, 0]} // Position for JAXON JVRC
+                                    scale={0.001} // Initial scale for JAXON JVRC
+                                    initialPosition={[0, -1, 0]} // Initial position for JAXON JVRC
                                 />
                             </Suspense>
+                            {/* CameraUpdater will still adjust the target and enable damping */}
                             <CameraUpdater
                                 loadedRobotInstanceRef={loadedRobotInstanceRef}
                                 triggerUpdate={cameraUpdateTrigger}
@@ -884,7 +913,7 @@ const UrdfUploader = () => {
                         </Canvas>
                     </div>
                 ) : (
-                    <div className="w-full md:w-1/2 aspect-[4/3] h-[600px] bg-gray-700 rounded-lg overflow-hidden shadow-inner border border-gray-600 flex items-center justify-center text-gray-400 text-xl"> {/* Increased height */}
+                    <div className="w-full md:w-1/2 aspect-[4/3] h-[600px] bg-gray-700 rounded-lg overflow-hidden shadow-inner border border-gray-600 flex items-center justify-center text-gray-400 text-xl">
                         {urdfFile && meshFiles.size > 0 ? "Click 'Load Robot' to view." : "Upload URDF and mesh files to begin."}
                     </div>
                 )}

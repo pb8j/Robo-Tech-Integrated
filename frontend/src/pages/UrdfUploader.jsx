@@ -7,7 +7,7 @@ import * as THREE from 'three';
 import { Text } from '@react-three/drei';
 import { LoadingManager, FileLoader } from 'three';
 
-// Import MediaPipe Hands and CameraUtil
+// Import MediaPipe Hands and CameraUtil - FIX: Changed '=' to 'from'
 import { Hands } from '@mediapipe/hands';
 import { Camera } from '@mediapipe/camera_utils';
 
@@ -29,7 +29,7 @@ const CameraUpdater = ({ loadedRobotInstanceRef, triggerUpdate }) => {
             const maxDim = Math.max(size.x, size.y, size.z);
             const fov = camera.fov * (Math.PI / 180);
             let cameraDistance = maxDim / (2 * Math.tan(fov / 2));
-            cameraDistance *= 1.8; // Adjust multiplier for desired distance and framing
+            cameraDistance *= 1.8; // Further adjust multiplier for desired distance and framing
 
             // Set camera position dynamically around the center, overriding fixed Canvas position if needed
             // This ensures OrbitControls starts from an appropriate distance and angle
@@ -204,10 +204,11 @@ const UrdfRobotModel = ({
             robotRef.current = robotLoadedInstance;
 
             // Apply global rotation for JAXON JVRC to stand upright
-            if (selectedRobotName === 'jaxon_jvrc') {
-                // Rotate JAXON from its default orientation (often Z-up, but on its side) to Y-up
-                // Common rotation is -PI/2 around X axis.
-                robotLoadedInstance.rotation.x = -Math.PI / 2; // Rotate -90 degrees on X to stand up
+            if (selectedRobotName === 'jaxon_jvrc' || selectedRobotName === 'trial' || selectedRobotName === 'hexapod_robot') {
+                // Rotate -90 degrees on X to make Z-up models stand upright on Y-axis
+                robotLoadedInstance.rotation.x = Math.PI / 2;
+                robotLoadedInstance.rotation.y = Math.PI;
+                robotLoadedInstance.rotation.z = Math.PI/1.8;
                 console.log("[UrdfRobotModel] JAXON JVRC: Applied initial upright rotation (X: -PI/2).");
                 // Adjust scale for JAXON
                 robotLoadedInstance.scale.set(0.001, 0.001, 0.001);
@@ -228,7 +229,7 @@ const UrdfRobotModel = ({
                 onRobotLoaded(robotLoadedInstance);
             }
         }
-    }, [robotLoadedInstance, onRobotLoaded, scale, initialPosition, selectedRobotName]); // Add selectedRobotName to deps
+    }, [robotLoadedInstance, onRobotLoaded, scale, initialPosition, selectedRobotName]);
 
     useEffect(() => {
         const robot = robotRef.current;
@@ -887,8 +888,7 @@ const UrdfUploader = () => {
                 {robotLoadRequested && urdfFile && meshFiles.size > 0 ? (
                     <div className="w-full md:w-1/2 aspect-[4/3] h-[600px] bg-gray-700 rounded-lg overflow-hidden shadow-inner border border-gray-600">
                         <Canvas
-                            // Use your suggested camera position to face the robot
-                            camera={{ position: [0, 1.5, 3], fov: 50 }} 
+                            camera={{ position: [0, 1.5, 3], fov: 50 }} // Use suggested fixed camera position
                         >
                             <ambientLight intensity={0.8} />
                             <directionalLight position={[2, 5, 2]} intensity={1} />
@@ -901,11 +901,10 @@ const UrdfUploader = () => {
                                     jointStates={robotJointStates}
                                     onRobotLoaded={handleUrdfRobotLoaded}
                                     selectedRobotName="jaxon_jvrc" // Assuming JAXON for hand control
-                                    scale={0.001} // Initial scale for JAXON JVRC
-                                    initialPosition={[0, -1, 0]} // Initial position for JAXON JVRC
+                                    scale={0.001} // Scale for JAXON JVRC
+                                    initialPosition={[0, -1, 0]} // Position for JAXON JVRC
                                 />
                             </Suspense>
-                            {/* CameraUpdater will still adjust the target and enable damping */}
                             <CameraUpdater
                                 loadedRobotInstanceRef={loadedRobotInstanceRef}
                                 triggerUpdate={cameraUpdateTrigger}

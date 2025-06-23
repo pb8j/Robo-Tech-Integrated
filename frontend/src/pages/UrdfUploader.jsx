@@ -7,10 +7,10 @@ import * as THREE from 'three';
 import { Text } from '@react-three/drei';
 import { LoadingManager, FileLoader } from 'three';
 
-// Import MediaPipe Hands and CameraUtil - FIX: Changed '=' to 'from'
+// Import MediaPipe Hands and CameraUtil
 import { Hands } from '@mediapipe/hands';
 import { Camera } from '@mediapipe/camera_utils';
-
+import { drawConnectors, drawLandmarks } from '@mediapipe/drawing_utils'; // Import drawing utilities
 
 // Helper component to control the camera within the R3F Canvas.
 const CameraUpdater = ({ loadedRobotInstanceRef, triggerUpdate }) => {
@@ -237,8 +237,8 @@ const UrdfRobotModel = ({
             return;
         }
 
-        const rotationAmount = 0.2;
-        const translationAmount = 0.1;
+        const rotationAmount = 0.2; // Keep for manual commands
+        const translationAmount = 0.1; // Keep for manual commands
 
         const getJointValue = (jointName) => {
             const joint = robot.joints[jointName];
@@ -251,9 +251,9 @@ const UrdfRobotModel = ({
                 let newValue = getJointValue(jointName) + delta;
                 newValue = Math.max(minLimit, Math.min(maxLimit, newValue));
                 joint.setJointValue(newValue);
-                console.log(`[UrdfRobotModel] Moved joint '${jointName}' to ${newValue.toFixed(3)} radians (delta: ${delta.toFixed(3)})`);
+                // console.log(`[UrdfRobotModel] Moved joint '${jointName}' to ${newValue.toFixed(3)} radians (delta: ${delta.toFixed(3)})`);
             } else {
-                console.warn(`[UrdfRobotModel] Joint '${jointName}' not found. Cannot apply movement.`);
+                // console.warn(`[UrdfRobotModel] Joint '${jointName}' not found. Cannot apply movement.`);
             }
         };
 
@@ -264,129 +264,73 @@ const UrdfRobotModel = ({
             robotType = 'humanoid';
         }
 
-        if (jointStates.cmd) {
-            if (robotType === 'hexapod') {
-                switch (jointStates.cmd) {
-                    case 'left':
-                        ['coxa_joint_r1', 'coxa_joint_r2', 'coxa_joint_r3'].forEach(jointName => {
-                            if (robot.joints[jointName]) robot.joints[jointName].setJointValue(getJointValue(jointName) + rotationAmount);
-                        });
-                        ['coxa_joint_l1', 'coxa_joint_l2', 'coxa_joint_l3'].forEach(jointName => {
-                            if (robot.joints[jointName]) robot.joints[jointName].setJointValue(getJointValue(jointName) - rotationAmount);
-                        });
-                        console.log("Hexapod: Attempting 'left' turn.");
-                        break;
-                    case 'right':
-                        ['coxa_joint_r1', 'coxa_joint_r2', 'coxa_joint_r3'].forEach(jointName => {
-                            if (robot.joints[jointName]) robot.joints[jointName].setJointValue(getJointValue(jointName) - rotationAmount);
-                        });
-                        ['coxa_joint_l1', 'coxa_joint_l2', 'coxa_joint_l3'].forEach(jointName => {
-                            if (robot.joints[jointName]) robot.joints[jointName].setJointValue(getJointValue(jointName) + rotationAmount);
-                        });
-                        console.log("Hexapod: Attempting 'right' turn.");
-                        break;
-                    case 'jump':
-                        const hexapodFemurJoints = [
-                            'femur_joint_r1', 'femur_joint_r2', 'femur_joint_r3',
-                            'femur_joint_l1', 'femur_joint_l2', 'femur_joint_l3'
-                        ];
+        // Apply direct joint states received from MediaPipe, overriding manual commands if they share joints
+        // Only process 'cmd' if there are no direct joint states for a humanoid
+        if (jointStates.cmd && robotType === 'hexapod') { // Manual commands for hexapod only
+             switch (jointStates.cmd) {
+                case 'left':
+                    ['coxa_joint_r1', 'coxa_joint_r2', 'coxa_joint_r3'].forEach(jointName => {
+                        if (robot.joints[jointName]) robot.joints[jointName].setJointValue(getJointValue(jointName) + rotationAmount);
+                    });
+                    ['coxa_joint_l1', 'coxa_joint_l2', 'coxa_joint_l3'].forEach(jointName => {
+                        if (robot.joints[jointName]) robot.joints[jointName].setJointValue(getJointValue(jointName) - rotationAmount);
+                    });
+                    console.log("Hexapod: Attempting 'left' turn.");
+                    break;
+                case 'right':
+                    ['coxa_joint_r1', 'coxa_joint_r2', 'coxa_joint_r3'].forEach(jointName => {
+                        if (robot.joints[jointName]) robot.joints[jointName].setJointValue(getJointValue(jointName) - rotationAmount);
+                    });
+                    ['coxa_joint_l1', 'coxa_joint_l2', 'coxa_joint_l3'].forEach(jointName => {
+                        if (robot.joints[jointName]) robot.joints[jointName].setJointValue(getJointValue(jointName) + rotationAmount);
+                    });
+                    console.log("Hexapod: Attempting 'right' turn.");
+                    break;
+                case 'jump':
+                    const hexapodFemurJoints = [
+                        'femur_joint_r1', 'femur_joint_r2', 'femur_joint_r3',
+                        'femur_joint_l1', 'femur_joint_l2', 'femur_joint_l3'
+                    ];
+                    hexapodFemurJoints.forEach(jointName => {
+                        if (robot.joints[jointName]) robot.joints[jointName].setJointValue(getJointValue(jointName) - rotationAmount);
+                    });
+                    setTimeout(() => {
                         hexapodFemurJoints.forEach(jointName => {
-                            if (robot.joints[jointName]) robot.joints[jointName].setJointValue(getJointValue(jointName) - rotationAmount);
+                            if (robot.joints[jointName]) robot.joints[jointName].setJointValue(getJointValue(jointName) + rotationAmount);
                         });
-                        setTimeout(() => {
-                            hexapodFemurJoints.forEach(jointName => {
-                                if (robot.joints[jointName]) robot.joints[jointName].setJointValue(getJointValue(jointName) + rotationAmount);
-                            });
-                        }, 300);
-                        console.log("Hexapod: Attempting 'jump'.");
-                        break;
-                    case 'forward':
-                        robot.position.z -= translationAmount * 5;
-                        console.log("Hexapod: Moving forward. New Z:", robot.position.z);
-                        break;
-                    case 'backward':
-                        robot.position.z += translationAmount * 5;
-                        console.log("Hexapod: Moving backward. New Z:", robot.position.z);
-                        break;
-                    case 'up':
-                        robot.position.y += translationAmount * 5;
-                        console.log("Hexapod: Moving up. New Y:", robot.position.y);
-                        break;
-                    case 'down':
-                        robot.position.y -= translationAmount * 5;
-                        console.log("Hexapod: Moving down. New Y:", robot.position.y);
-                        break;
-                    default:
-                        console.log(`[UrdfRobotModel] Unhandled hexapod command: ${jointStates.cmd}`);
-                        break;
-                }
-            } else if (robotType === 'humanoid') { // JAXON JVRC or similar
-                console.log(`[UrdfRobotModel] JAXON JVRC: Processing command: ${jointStates.cmd}`);
-
-                const JOINT_MAX_RANGE = Math.PI / 2;
-                const JOINT_MIN_RANGE = -Math.PI / 2;
-
-                switch (jointStates.cmd) {
-                    case 'left':
-                        applyJointMovement('CHEST_JOINT0', rotationAmount, -1.0, 1.0); // Yaw
-                        applyJointMovement('LARM_JOINT0', rotationAmount, -1.5, 1.5); // L shoulder roll
-                        applyJointMovement('RARM_JOINT0', -rotationAmount, -1.5, 1.5); // R shoulder roll
-                        break;
-                    case 'right':
-                        applyJointMovement('CHEST_JOINT0', -rotationAmount, -1.0, 1.0); // Yaw
-                        applyJointMovement('LARM_JOINT0', -rotationAmount, -1.5, 1.5); // L shoulder roll
-                        applyJointMovement('RARM_JOINT0', rotationAmount, -1.5, 1.5); // R shoulder roll
-                        break;
-                    case 'up':
-                        applyJointMovement('LARM_JOINT1', -rotationAmount, -3.14, 3.14);
-                        applyJointMovement('RARM_JOINT1', -rotationAmount, -3.14, 3.14);
-                        applyJointMovement('CHEST_JOINT1', rotationAmount, -0.5, 0.7);
-                        applyJointMovement('HEAD_JOINT1', rotationAmount, -0.6, 0.7);
-                        break;
-                    case 'down':
-                        applyJointMovement('LARM_JOINT1', rotationAmount, -3.14, 3.14);
-                        applyJointMovement('RARM_JOINT1', rotationAmount, -3.14, 3.14);
-                        applyJointMovement('CHEST_JOINT1', -rotationAmount, -0.5, 0.7);
-                        applyJointMovement('HEAD_JOINT1', -rotationAmount, -0.6, 0.7);
-                        break;
-                    case 'jump':
-                        robot.position.y += translationAmount * 5;
-                        console.log("JAXON JVRC: Attempting 'jump' (body lift). New Y:", robot.position.y);
-                        setTimeout(() => {
-                            robot.position.y -= translationAmount * 5;
-                        }, 300);
-                        break;
-                    case 'open_fingers_l':
-                        applyJointMovement('LARM_F_JOINT0', rotationAmount, -1.5, 1.5);
-                        applyJointMovement('LARM_F_JOINT1', rotationAmount, -1.5, 1.5);
-                        break;
-                    case 'close_fingers_l':
-                        applyJointMovement('LARM_F_JOINT0', -rotationAmount, -1.5, 1.5);
-                        applyJointMovement('LARM_F_JOINT1', -rotationAmount, -1.5, 1.5);
-                        break;
-                    case 'open_fingers_r':
-                        applyJointMovement('RARM_F_JOINT0', rotationAmount, -1.5, 1.5);
-                        applyJointMovement('RARM_F_JOINT1', rotationAmount, -1.5, 1.5);
-                        break;
-                    case 'close_fingers_r':
-                        applyJointMovement('RARM_F_JOINT0', -rotationAmount, -1.5, 1.5);
-                        applyJointMovement('RARM_F_JOINT1', -rotationAmount, -1.5, 1.5);
-                        break;
-                    default:
-                        console.log(`[UrdfRobotModel] Unhandled humanoid command: ${jointStates.cmd}`);
-                        break;
-                }
-            } else {
-                console.log(`[UrdfRobotModel] Command '${jointStates.cmd}' ignored for unknown robot type.`);
+                    }, 300);
+                    console.log("Hexapod: Attempting 'jump'.");
+                    break;
+                case 'forward':
+                    robot.position.z -= translationAmount * 5;
+                    console.log("Hexapod: Moving forward. New Z:", robot.position.z);
+                    break;
+                case 'backward':
+                    robot.position.z += translationAmount * 5;
+                    console.log("Hexapod: Moving backward. New Z:", robot.position.z);
+                    break;
+                case 'up':
+                    robot.position.y += translationAmount * 5;
+                    console.log("Hexapod: Moving up. New Y:", robot.position.y);
+                    break;
+                case 'down':
+                    robot.position.y -= translationAmount * 5;
+                    console.log("Hexapod: Moving down. New Y:", robot.position.y);
+                    break;
+                default:
+                    console.log(`[UrdfRobotModel] Unhandled hexapod command: ${jointStates.cmd}`);
+                    break;
             }
         }
 
+        // Always apply specific joint values, which come from MediaPipe in the humanoid case
         for (const jointName in jointStates) {
-            if (jointName !== 'cmd' && jointName !== 'timestamp') {
+            if (jointName !== 'cmd' && jointName !== 'timestamp') { // 'cmd' is for hexapod, 'timestamp' is metadata
                 const targetAngle = jointStates[jointName];
                 const urdfJoint = robot.joints[jointName];
                 if (urdfJoint) {
                     if (typeof targetAngle === 'number' && !isNaN(targetAngle)) {
+                        // Only update if the value has changed to avoid unnecessary re-renders
                         if (urdfJoint.angle !== targetAngle) {
                             urdfJoint.setJointValue(targetAngle);
                         }
@@ -437,6 +381,7 @@ const UrdfUploader = () => {
 
     // MediaPipe & Camera states and refs
     const videoRef = useRef(null); // Ref for the local video element
+    const canvasRef = useRef(null); // Ref for the 2D canvas overlay
     const hands = useRef(null); // MediaPipe Hands instance
     const cameraInstance = useRef(null); // MediaPipe Camera instance
 
@@ -444,6 +389,14 @@ const UrdfUploader = () => {
     const [robotJointStates, setRobotJointStates] = useState({}); // Joint states for the robot
     const loadedRobotInstanceRef = useRef(null); // Ref to hold the actual Three.js robot object
     const [cameraUpdateTrigger, setCameraUpdateTrigger] = useState(0); // To force CameraUpdater re-run
+
+    // Callback to get the loaded robot instance from UrdfRobotModel
+    // Moved this declaration earlier in the component to avoid ReferenceError
+    const handleUrdfRobotLoaded = useCallback((robotObject) => {
+        console.log("[UrdfUploader] UrdfRobotModel reported robot loaded:", robotObject);
+        loadedRobotInstanceRef.current = robotObject;
+        setCameraUpdateTrigger(prev => prev + 1);
+    }, []);
 
     // Memoized Blob URL for URDF content
     const urdfContentBlobUrl = useMemo(() => {
@@ -476,21 +429,57 @@ const UrdfUploader = () => {
         };
     }, [fileMapForModel]);
 
+
     // --- MediaPipe Hand Landmark Processing and Gesture-to-Joint Mapping ---
     const onResults = useCallback((results) => {
+        const canvasElement = canvasRef.current;
+        const videoElement = videoRef.current;
+        const canvasCtx = canvasElement?.getContext('2d');
+
+        if (!canvasCtx || !videoElement) {
+            console.warn("Canvas or video element not ready for drawing.");
+            return;
+        }
+
+        // Clear the canvas
+        canvasCtx.save();
+        canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
+
+        // Draw the mirrored video feed onto the canvas
+        // This is crucial for matching landmark coordinates if the video is mirrored.
+        canvasCtx.translate(canvasElement.width, 0);
+        canvasCtx.scale(-1, 1);
+        canvasCtx.drawImage(results.image, 0, 0, canvasElement.width, canvasElement.height);
+        canvasCtx.restore(); // Restore to apply transformations only to drawing, not canvas state
+
         if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
             const landmarks = results.multiHandLandmarks[0];
-            setHandLandmarks(landmarks);
+            setHandLandmarks(landmarks); // Store raw landmarks for potential debug or other use
+
+            // Draw hand landmarks and connections
+            drawConnectors(canvasCtx, landmarks, Hands.HAND_CONNECTIONS, { color: '#00FF00', lineWidth: 5 });
+            drawLandmarks(canvasCtx, landmarks, { color: '#FF0000', lineWidth: 2 });
 
             if (!loadedRobotInstanceRef.current) {
-                console.warn("[UrdfUploader] Robot not yet loaded or recognized for gesture control.");
+                // console.warn("[UrdfUploader] Robot not yet loaded or recognized for gesture control.");
                 return;
             }
 
             const robot = loadedRobotInstanceRef.current;
             const newJoints = {};
-            const JOINT_MAX_RANGE = Math.PI / 2;
-            const JOINT_MIN_RANGE = -Math.PI / 2;
+            const JOINT_MAX_RANGE_HEAD_YAW = Math.PI / 4; // Max 45 degrees left/right
+            const JOINT_MIN_RANGE_HEAD_YAW = -Math.PI / 4;
+            const JOINT_MAX_RANGE_HEAD_PITCH = Math.PI / 6; // Max 30 degrees up/down
+            const JOINT_MIN_RANGE_HEAD_PITCH = -Math.PI / 6;
+
+            const JOINT_MAX_RANGE_ARM_SWING = Math.PI / 2; // Max 90 degrees shoulder swing
+            const JOINT_MIN_RANGE_ARM_SWING = -Math.PI / 2;
+            const JOINT_MAX_RANGE_ARM_ROLL = Math.PI / 2;
+            const JOINT_MIN_RANGE_ARM_ROLL = -Math.PI / 2;
+            const JOINT_MAX_RANGE_ARM_PITCH = Math.PI / 2;
+            const JOINT_MIN_RANGE_ARM_PITCH = -Math.PI / 2;
+
+            const FINGER_JOINT_RANGE = 1.0; // Assuming a 0-1 range for fingers for simplicity
 
             const distance = (p1, p2) => Math.sqrt(Math.pow(p2.x - p1.x, 2) + Math.pow(p2.y - p1.y, 2) + Math.pow(p2.z - p1.z, 2));
             const mapRange = (value, inMin, inMax, outMin, outMax) => {
@@ -498,84 +487,128 @@ const UrdfUploader = () => {
                 return (clampedValue - inMin) * (outMax - outMin) / (inMax - inMin) + outMin;
             };
 
-            // HEAD MOVEMENT
-            if (robot.joints['HEAD_JOINT0'] && robot.joints['HEAD_JOINT1'] && landmarks[0]) {
-                const headYaw = mapRange(landmarks[0].x, 0, 1, JOINT_MAX_RANGE, JOINT_MIN_RANGE);
-                const headPitch = mapRange(landmarks[0].y, 0, 1, JOINT_MAX_RANGE, JOINT_MIN_RANGE);
+            // Assuming a single hand for control. Typically right hand for right arm, left for left.
+            // For now, let's use the first detected hand to control both if only one is present,
+            // or consider it the 'right hand' if only one.
+            const wrist = landmarks[0]; // Landmark 0 is the wrist
+            const thumbTip = landmarks[4];
+            const indexTip = landmarks[8];
+            const middleTip = landmarks[12];
+            const pinkyTip = landmarks[20];
+
+            // --- HEAD MOVEMENT ---
+            // Using wrist (landmark 0) X for yaw and Y for pitch.
+            // Normalize X and Y from 0-1 to -0.5 to 0.5 to center the movement.
+            // Adjust sensitivity and ranges as needed for your specific robot model and feel.
+            if (robot.joints['HEAD_JOINT0'] && robot.joints['HEAD_JOINT1'] && wrist) {
+                // Map X position (left-right) to head yaw
+                const headYaw = mapRange(wrist.x, 0.2, 0.8, JOINT_MAX_RANGE_HEAD_YAW, JOINT_MIN_RANGE_HEAD_YAW);
+                // Map Y position (up-down) to head pitch
+                const headPitch = mapRange(wrist.y, 0.2, 0.8, JOINT_MAX_RANGE_HEAD_PITCH, JOINT_MIN_RANGE_HEAD_PITCH);
+
                 newJoints['HEAD_JOINT0'] = headYaw;
                 newJoints['HEAD_JOINT1'] = headPitch;
             }
 
-            // ARM MOVEMENT (Shoulder Pitch/Extension)
-            if (robot.joints['LARM_JOINT1'] && robot.joints['RARM_JOINT1'] && landmarks[0]) {
-                const armPitchValue = mapRange(landmarks[0].z, -0.2, 0.2, JOINT_MAX_RANGE, JOINT_MIN_RANGE);
+            // --- ARM MOVEMENT (JAXON JVRC has LARM_JOINT0, LARM_JOINT1, RARM_JOINT0, RARM_JOINT1) ---
+            // LARM_JOINT0: Shoulder Roll (side-to-side, out-in)
+            // LARM_JOINT1: Shoulder Pitch (forward-back, up-down)
+            // Using wrist X for shoulder roll and wrist Y for shoulder pitch.
+            // The depth (Z) can be used for arm extension if applicable, but for simple rotation, X/Y are easier.
+
+            if (robot.joints['LARM_JOINT0'] && robot.joints['RARM_JOINT0'] && robot.joints['LARM_JOINT1'] && robot.joints['RARM_JOINT1'] && wrist) {
+                // Map wrist X to shoulder roll (LARM_JOINT0 and RARM_JOINT0)
+                // If wrist moves left (smaller X), left arm goes out (positive angle), right arm goes in (negative angle)
+                const armRollValue = mapRange(wrist.x, 0.2, 0.8, JOINT_MAX_RANGE_ARM_ROLL, JOINT_MIN_RANGE_ARM_ROLL);
+                newJoints['LARM_JOINT0'] = armRollValue;
+                newJoints['RARM_JOINT0'] = -armRollValue; // Invert for the right arm
+
+                // Map wrist Y to shoulder pitch (LARM_JOINT1 and RARM_JOINT1)
+                // If wrist moves up (smaller Y), arms go up (negative angle for pitch)
+                const armPitchValue = mapRange(wrist.y, 0.2, 0.8, JOINT_MAX_RANGE_ARM_PITCH, JOINT_MIN_RANGE_ARM_PITCH);
                 newJoints['LARM_JOINT1'] = armPitchValue;
                 newJoints['RARM_JOINT1'] = armPitchValue;
             }
 
-            // SHOULDER ROLL / ARM OUT-IN
-            if (robot.joints['LARM_JOINT0'] && robot.joints['RARM_JOINT0'] && landmarks[0]) {
-                const armRollValue = mapRange(landmarks[0].x, 0, 1, -JOINT_MAX_RANGE, JOINT_MAX_RANGE);
-                newJoints['LARM_JOINT0'] = armRollValue;
-                newJoints['RARM_JOINT0'] = -armRollValue;
-            }
+            // --- FINGER MOVEMENT (Revisiting the original logic for clarity) ---
+            if (thumbTip && indexTip && middleTip && pinkyTip) {
+                // Simplified "grasp" gesture: when thumb is close to index/middle/ring/pinky.
+                // We'll use a single value to control all fingers for simplicity.
+                // Distance between thumb tip (4) and index finger base (5) or index tip (8)
+                const thumbIndexProximalDistance = distance(landmarks[4], landmarks[5]); // Thumb tip to index base
+                // const indexPinkyDistance = distance(landmarks[8], landmarks[20]); // Index tip to pinky tip // Not used for this simple logic
 
-            // FINGER MOVEMENT
-            const thumbTip = landmarks[4];
-            const indexTip = landmarks[8];
-            const middleTip = landmarks[12];
-            if (thumbTip && indexTip && middleTip && robot.joints['LARM_F_JOINT0'] && robot.joints['LARM_F_JOINT1']) {
-                const thumbIndexDistance = distance(thumbTip, indexTip);
-                const thumbMiddleDistance = distance(thumbTip, middleTip);
-
-                const isOpen = thumbIndexDistance > 0.08 && thumbMiddleDistance > 0.08;
-                const isClosed = thumbIndexDistance < 0.04 && thumbMiddleDistance < 0.04;
+                // Heuristic for open/close: if thumb-index distance is large, open. If small, closed.
+                // Adjust these thresholds based on your hand size and gesture style.
+                const openThreshold = 0.1; // If thumb-index distance > this, likely open
+                const closedThreshold = 0.04; // If thumb-index distance < this, likely closed
 
                 let fingerAngle = 0;
-                if (isOpen) {
-                    fingerAngle = mapRange(thumbIndexDistance, 0.08, 0.15, 0, 1.0);
-                } else if (isClosed) {
-                    fingerAngle = mapRange(thumbIndexDistance, 0.03, 0.06, 1.0, 0);
-                }
-                fingerAngle = Math.max(0, Math.min(fingerAngle, 1.0));
 
-                newJoints['LARM_F_JOINT0'] = fingerAngle;
-                newJoints['LARM_F_JOINT1'] = fingerAngle;
+                if (thumbIndexProximalDistance > openThreshold) {
+                    // Fully open
+                    fingerAngle = 0;
+                } else if (thumbIndexProximalDistance < closedThreshold) {
+                    // Fully closed
+                    fingerAngle = FINGER_JOINT_RANGE;
+                } else {
+                    // In between, interpolate
+                    fingerAngle = mapRange(thumbIndexProximalDistance, closedThreshold, openThreshold, FINGER_JOINT_RANGE, 0);
+                }
+
+                if (robot.joints['LARM_F_JOINT0'] && robot.joints['LARM_F_JOINT1']) {
+                    newJoints['LARM_F_JOINT0'] = fingerAngle; // Main finger joint
+                    newJoints['LARM_F_JOINT1'] = fingerAngle; // Another finger joint if available
+                }
                 if (robot.joints['RARM_F_JOINT0'] && robot.joints['RARM_F_JOINT1']) {
                     newJoints['RARM_F_JOINT0'] = fingerAngle;
                     newJoints['RARM_F_JOINT1'] = fingerAngle;
                 }
             }
 
-            // CHASSIS/BODY MOVEMENT
-            if (robot.joints['CHEST_JOINT0'] && robot.joints['CHEST_JOINT1'] && landmarks[0]) {
-                 const chestYaw = mapRange(landmarks[0].x, 0, 1, JOINT_MAX_RANGE, JOINT_MIN_RANGE);
-                 const chestPitch = mapRange(landmarks[0].y, 0, 1, JOINT_MAX_RANGE, JOINT_MIN_RANGE);
-                 newJoints['CHEST_JOINT0'] = chestYaw * 0.3;
-                 newJoints['CHEST_JOINT1'] = chestPitch * 0.3;
+
+            // --- CHASSIS/BODY MOVEMENT (Can be controlled by the hand's overall position relative to center) ---
+            // If you want to move the chest by shifting your hand, for example:
+            if (robot.joints['CHEST_JOINT0'] && robot.joints['CHEST_JOINT1'] && wrist) {
+                // Map wrist X to chest yaw (side-to-side body lean)
+                const chestYaw = mapRange(wrist.x, 0.2, 0.8, JOINT_MAX_RANGE_HEAD_YAW * 0.5, JOINT_MIN_RANGE_HEAD_YAW * 0.5); // Less sensitive than head
+                // Map wrist Y to chest pitch (forward-backward body lean)
+                const chestPitch = mapRange(wrist.y, 0.2, 0.8, JOINT_MAX_RANGE_HEAD_PITCH * 0.5, JOINT_MIN_RANGE_HEAD_PITCH * 0.5);
+
+                newJoints['CHEST_JOINT0'] = chestYaw;
+                newJoints['CHEST_JOINT1'] = chestPitch;
             }
 
             setRobotJointStates(prev => ({ ...prev, ...newJoints, timestamp: Date.now() }));
 
         } else {
             setHandLandmarks(null);
+            // Clear canvas if no hands are detected
+            if (canvasCtx) {
+                canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
+            }
         }
-    }, [loadedRobotInstanceRef]);
+    }, [loadedRobotInstanceRef]); // Only re-create if loadedRobotInstanceRef changes
 
     // Setup Camera and MediaPipe Hands
     const setupMediaPipe = useCallback(() => {
         const videoElement = videoRef.current;
-        if (!videoElement) {
-            setStatus("Video element not found. Retrying setup...");
+        const canvasElement = canvasRef.current; // Get canvas element here
+        if (!videoElement || !canvasElement) { // Check for canvas too
+            setStatus("Video or canvas element not found. Retrying setup...");
             return;
         }
+
+        // Set canvas dimensions to match video
+        canvasElement.width = videoElement.videoWidth || 640;
+        canvasElement.height = videoElement.videoHeight || 480;
 
         // Initialize MediaPipe Hands
         hands.current = new Hands({
             locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`
         });
         hands.current.setOptions({
-            maxNumHands: 1,
+            maxNumHands: 1, // Focus on single hand for now to simplify control
             modelComplexity: 1,
             minDetectionConfidence: 0.7,
             minTrackingConfidence: 0.6
@@ -585,7 +618,8 @@ const UrdfUploader = () => {
         // Setup Camera Stream
         cameraInstance.current = new Camera(videoElement, {
             onFrame: async () => {
-                if (videoElement.readyState === 4) {
+                // FIX: Add null check for hands.current before sending image
+                if (videoElement.readyState === 4 && hands.current) {
                     await hands.current.send({ image: videoElement });
                 }
             },
@@ -613,7 +647,7 @@ const UrdfUploader = () => {
                 `;
                 document.body.appendChild(messageBox);
             });
-    }, [onResults]);
+    }, [onResults]); // setupMediaPipe depends on onResults, so it needs to be in dependency array.
 
     // Effect to manage MediaPipe lifecycle
     useEffect(() => {
@@ -630,15 +664,7 @@ const UrdfUploader = () => {
                 hands.current = null;
             }
         };
-    }, [setupMediaPipe]);
-
-    // Callback to get the loaded robot instance from UrdfRobotModel
-    const handleUrdfRobotLoaded = useCallback((robotObject) => {
-        console.log("[UrdfUploader] UrdfRobotModel reported robot loaded:", robotObject);
-        loadedRobotInstanceRef.current = robotObject;
-        setCameraUpdateTrigger(prev => prev + 1);
-    }, []);
-
+    }, [setupMediaPipe]); // Depend on setupMediaPipe
 
     // --- File Upload Handlers ---
     const handleUrdfFileChange = (e) => {
@@ -782,9 +808,10 @@ const UrdfUploader = () => {
         if (meshesInputRef.current) meshesInputRef.current.value = '';
     };
 
-    const getUrdfBasePath = () => {
-        return '/';
-    };
+    // This function is not used in the current setup, but was present in original
+    // const getUrdfBasePath = () => {
+    //     return '/';
+    // };
 
 
     return (
@@ -874,14 +901,16 @@ const UrdfUploader = () => {
                         playsInline
                         className="w-full h-full object-cover transform scaleX(-1)" // Mirror the video
                     />
+                    {/* Add a canvas overlay for drawing landmarks */}
+                    <canvas
+                        ref={canvasRef}
+                        className="absolute top-0 left-0 w-full h-full"
+                        style={{ transform: 'scaleX(-1)' }} // Mirror the canvas drawing as well
+                    />
                     <div className="absolute top-2 left-2 bg-black bg-opacity-50 text-white text-sm px-2 py-1 rounded">
                         Your Camera Feed
                     </div>
-                    {handLandmarks && (
-                        <div className="absolute inset-0 flex items-center justify-center">
-                            <span className="text-green-400 text-5xl animate-pulse">✋</span>
-                        </div>
-                    )}
+                    {/* Removed handLandmarks conditional rendering for hand emoji as we are drawing dots */}
                 </div>
 
                 {/* URDF Robot Display */}

@@ -371,6 +371,11 @@
   resolved "https://registry.npmjs.org/@mediapipe/camera_utils/-/camera_utils-0.3.1675466862.tgz"
   integrity sha512-siuXBoUxWo9WL0MeAxIxvxY04bvbtdNl7uCxoJxiAiRtNnCYrurr7Vl5VYQ94P7Sq0gVq6PxIDhWWeZ/pLnSzw==
 
+"@mediapipe/drawing_utils@^0.3.1675466124":
+  version "0.3.1675466124"
+  resolved "https://registry.npmjs.org/@mediapipe/drawing_utils/-/drawing_utils-0.3.1675466124.tgz"
+  integrity sha512-/IWIB/iYRMtiUKe3k7yGqvwseWHCOqzVpRDfMgZ6gv9z7EEimg6iZbRluoPbcNKHbYSxN5yOvYTzUYb8KVf22Q==
+
 "@mediapipe/hands@^0.4.1675469240":
   version "0.4.1675469240"
   resolved "https://registry.npmjs.org/@mediapipe/hands/-/hands-0.4.1675469240.tgz"

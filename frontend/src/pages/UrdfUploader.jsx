@@ -73,19 +73,29 @@ const UrdfUploader = () => {
         return (clampedValue - inMin) * (outMax - outMin) / (inMax - inMin) + outMin;
     };
 
+    const calculateAngle = (a, b, c) => {
+        if (!a || !b || !c) return 0;
+        const rad = Math.atan2(c.y - b.y, c.x - b.x) - Math.atan2(a.y - b.y, a.x - b.x);
+        let angle = Math.abs(rad);
+        if (angle > Math.PI) {
+            angle = 2 * Math.PI - angle;
+        }
+        return angle;
+    };
+
     const onResults = useCallback((results) => {
         if (results.poseLandmarks) {
             setPoseLandmarks(results.poseLandmarks);
             
             // Head control (using nose landmark)
             if (results.poseLandmarks[0] && loadedRobotInstanceRef.current) {
-                const headYaw = mapRange(results.poseLandmarks[0].x, 0, 1, -Math.PI, Math.PI);
-                const headPitch = mapRange(results.poseLandmarks[0].y, 0, 1, -Math.PI, Math.PI);
+                const headYaw = mapRange(results.poseLandmarks[0].x, 0, 1, Math.PI, -Math.PI);
+                const headPitch = mapRange(results.poseLandmarks[0].y, 0, 1, Math.PI, -Math.PI);
                 
                 setRobotJointStates(prev => ({
                     ...prev,
-                    'HEAD_JOINT0': headYaw,
-                    'HEAD_JOINT1': headPitch,
+                    'HEAD_JOINT0': -headYaw,
+                    'HEAD_JOINT1': -headPitch,
                 }));
             }
         } else {
@@ -101,13 +111,13 @@ const UrdfUploader = () => {
                 const elbow = results.poseLandmarks?.[13];
                 
                 if (wrist && elbow) {
-                    const shoulderPitch = mapRange(wrist.y, 0, 1, Math.PI/2, -Math.PI);
-                    const shoulderRoll = mapRange(wrist.x, 0, 1, Math.PI/2, -Math.PI);
+                    const shoulderPitch = mapRange(wrist.y, 0, 0.75, Math.PI, -Math.PI/6);
+                    const shoulderRoll = mapRange(wrist.x, 0, 1, Math.PI/4, -Math.PI/4);
                     
                     setRobotJointStates(prev => ({
                         ...prev,
                         'LARM_JOINT0': -shoulderRoll,
-                        'LARM_JOINT1': shoulderPitch,
+                        'LARM_JOINT1': -shoulderPitch,
                     }));
                 }
             }
@@ -124,13 +134,13 @@ const UrdfUploader = () => {
                 const elbow = results.poseLandmarks?.[14];
                 
                 if (wrist && elbow) {
-                    const shoulderPitch = mapRange(wrist.y, 0, 1, Math.PI/2, -Math.PI);
-                    const shoulderRoll = mapRange(wrist.x, 0, 1, Math.PI/2, -Math.PI);
+                    const shoulderPitch = mapRange(wrist.y, 0, 0.75, Math.PI, -Math.PI/6);
+                    const shoulderRoll = mapRange(wrist.x, 0, 1, Math.PI/4, -Math.PI/4);
                     
                     setRobotJointStates(prev => ({
                         ...prev,
                         'RARM_JOINT0': -shoulderRoll,
-                        'RARM_JOINT1': shoulderPitch,
+                        'RARM_JOINT1': -shoulderPitch,
                     }));
                 }
             }
@@ -217,7 +227,7 @@ const UrdfUploader = () => {
                 const y = landmark.y * video.videoHeight;
                 
                 ctx.beginPath();
-                ctx.arc(x, y, 5, 0, 2 * Math.PI);
+                ctx.arc(x, y, 5, 0, 2 * Math.PI,true);
                 ctx.fill();
             }
         };

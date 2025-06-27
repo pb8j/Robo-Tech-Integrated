@@ -104,48 +104,83 @@ const UrdfUploader = () => {
 
         // Left arm control
         if (results.leftHandLandmarks) {
-            setLeftHandLandmarks(results.leftHandLandmarks);
-            
-            if (loadedRobotInstanceRef.current) {
-                const wrist = results.leftHandLandmarks[0];
-                const elbow = results.poseLandmarks?.[13];
-                
-                if (wrist && elbow) {
-                    const shoulderPitch = mapRange(wrist.y, 0, 0.75, Math.PI, -Math.PI/6);
-                    const shoulderRoll = mapRange(wrist.x, 0, 1, Math.PI/4, -Math.PI/4);
-                    
-                    setRobotJointStates(prev => ({
-                        ...prev,
-                        'LARM_JOINT0': -shoulderRoll,
-                        'LARM_JOINT1': -shoulderPitch,
-                    }));
-                }
+        setLeftHandLandmarks(results.leftHandLandmarks);
+
+        if (loadedRobotInstanceRef.current) {
+            const wrist = results.leftHandLandmarks[0];
+            const elbow = results.poseLandmarks?.[13]; // Left elbow landmark
+            const shoulder = results.poseLandmarks?.[11]; // Left shoulder landmark
+
+            if (wrist && elbow && shoulder) {
+                const shoulderPitch = mapRange(wrist.y, 0, 0.75, Math.PI, -Math.PI/6);
+                const shoulderRoll = mapRange(wrist.x, 0, 1, Math.PI/4, -Math.PI/4);
+
+                // Calculate left elbow angle
+                const leftElbowAngleRad = calculateAngle(shoulder, elbow, wrist);
+
+                // *** MODIFIED ELBOW MAPPING LOGIC ***
+                // InMin/InMax: Adjusted based on common human elbow range.
+                // A straight arm is close to Math.PI (180 deg), a bent arm is closer to 0 or 0.1-0.3 (0-15 deg).
+                const humanElbowMinAngle = 0.1; // Small angle when arm is fully bent (e.g., 5-10 degrees)
+                const humanElbowMaxAngle = Math.PI - 0.1; // Close to 180 degrees for a straight arm
+
+                // OutMin/OutMax: Adjusted for the robot's elbow joint.
+                // Assuming 0 for straight arm and Math.PI/2 (90 degrees) for a bent arm.
+                // We want to map straight human arm (humanElbowMaxAngle) to straight robot arm (robotElbowStraightAngle).
+                // We want to map bent human arm (humanElbowMinAngle) to bent robot arm (robotElbowBentAngle).
+                const robotElbowStraightAngle = 0; // Robot's angle when arm is straight
+                const robotElbowBentAngle = Math.PI / 2; // Robot's angle when arm is bent to 90 degrees
+
+                // To fix the inversion: map high human angle to low robot angle, and low human angle to high robot angle.
+                const elbowJointAngle = mapRange(leftElbowAngleRad, humanElbowMinAngle, humanElbowMaxAngle, robotElbowBentAngle, robotElbowStraightAngle);
+
+                setRobotJointStates(prev => ({
+                    ...prev,
+                    'LARM_JOINT0': -shoulderRoll,
+                    'LARM_JOINT1': -shoulderPitch,
+                    'LARM_JOINT4': -elbowJointAngle, // Removed the negation here, as mapRange handles it
+                }));
             }
-        } else {
-            setLeftHandLandmarks(null);
         }
+    } else {
+        setLeftHandLandmarks(null);
+    }
 
         // Right arm control
         if (results.rightHandLandmarks) {
-            setRightHandLandmarks(results.rightHandLandmarks);
-            
-            if (loadedRobotInstanceRef.current) {
-                const wrist = results.rightHandLandmarks[0];
-                const elbow = results.poseLandmarks?.[14];
-                
-                if (wrist && elbow) {
-                    const shoulderPitch = mapRange(wrist.y, 0, 0.75, Math.PI, -Math.PI/6);
-                    const shoulderRoll = mapRange(wrist.x, 0, 1, Math.PI/4, -Math.PI/4);
-                    
-                    setRobotJointStates(prev => ({
-                        ...prev,
-                        'RARM_JOINT0': -shoulderRoll,
-                        'RARM_JOINT1': -shoulderPitch,
-                    }));
-                }
+        setRightHandLandmarks(results.rightHandLandmarks);
+
+        if (loadedRobotInstanceRef.current) {
+            const wrist = results.rightHandLandmarks[0];
+            const elbow = results.poseLandmarks?.[14]; // Right elbow landmark
+            const shoulder = results.poseLandmarks?.[12]; // Right shoulder landmark
+
+            if (wrist && elbow && shoulder) {
+                const shoulderPitch = mapRange(wrist.y, 0, 0.75, Math.PI, -Math.PI/6);
+                const shoulderRoll = mapRange(wrist.x, 0, 1, Math.PI/4, -Math.PI/4);
+
+                // Calculate right elbow angle
+                const rightElbowAngleRad = calculateAngle(shoulder, elbow, wrist);
+
+                // *** MODIFIED ELBOW MAPPING LOGIC ***
+                const humanElbowMinAngle = 0.1;
+                const humanElbowMaxAngle = Math.PI - 0.1;
+
+                const robotElbowStraightAngle = 0;
+                const robotElbowBentAngle = Math.PI / 2;
+
+                const elbowJointAngle = mapRange(rightElbowAngleRad, humanElbowMinAngle, humanElbowMaxAngle, robotElbowBentAngle, robotElbowStraightAngle);
+
+                setRobotJointStates(prev => ({
+                    ...prev,
+                    'RARM_JOINT0': -shoulderRoll,
+                    'RARM_JOINT1': -shoulderPitch,
+                    'RARM_JOINT4': -elbowJointAngle, 
+                }));
             }
-        } else {
-            setRightHandLandmarks(null);
+        }
+    } else {
+        setRightHandLandmarks(null);
         }
     }, []);
 

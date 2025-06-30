@@ -226,19 +226,21 @@ const UrdfRobotModel = ({
         if (!robot || !jointStates || Object.keys(jointStates).length === 0) {
             return;
         }
-
+        // console.log("[UrdfRobotModel] Updating robot joints with:", jointStates); // Add log to see incoming states
         for (const jointName in jointStates) {
             if (jointName !== 'cmd' && jointName !== 'timestamp') {
                 const targetAngle = jointStates[jointName];
                 const urdfJoint = robot.joints[jointName];
                 if (urdfJoint && typeof targetAngle === 'number' && !isNaN(targetAngle)) {
-                    if (Math.abs(urdfJoint.angle - targetAngle) > 0.001) {
+                    // Re-introduced a very small threshold for stability, or remove entirely if needed.
+                    // This prevents constant updates for tiny, imperceptible changes.
+                    if (Math.abs(urdfJoint.angle - targetAngle) > 0.00001) { 
                         urdfJoint.setJointValue(targetAngle);
                     }
                 }
             }
         }
-    }, [jointStates]);
+    }, [jointStates]); // This dependency correctly triggers updates when jointStates object reference changes
 
     useEffect(() => {
         return () => {

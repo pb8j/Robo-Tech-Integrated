@@ -6,6 +6,7 @@ import { Text } from '@react-three/drei';
 import { Holistic } from '@mediapipe/holistic';
 import { Camera } from '@mediapipe/camera_utils';
 import { UrdfRobotModel, CameraUpdater } from '../components/UrdfRobotModel';
+import VideoRecorder from '../components/VideoRecorder';
 
 const ROBOT_MODELS = {
     hexapod_robot: {
@@ -21,25 +22,46 @@ const ROBOT_MODELS = {
 };
 
 const UrdfUploader = () => {
+    // State variables
     const [urdfFile, setUrdfFile] = useState(null);
-    const [meshFiles, setMeshFiles] = useState(new Map());
+    const [meshFiles, setMeshFiles] = useState(new Map()); 
     const [status, setStatus] = useState("Upload your URDF and mesh files.");
     const [robotLoadRequested, setRobotLoadRequested] = useState(false);
+    
+    // Video recording and playback states
+    const [recordedVideoBlob, setRecordedVideoBlob] = useState(null);
+    const [isPlayingRecordedVideo, setIsPlayingRecordedVideo] = useState(false);
+    const [recordedJointStatesSequence, setRecordedJointStatesSequence] = useState([]); 
+    const [isPlayingRecordedData, setIsPlayingRecordedData] = useState(false); // Controls robot animation from recorded data
 
+    // MediaPipe and Robot control states
+    const [poseLandmarks, setPoseLandmarks] = useState(null); // Live MediaPipe landmarks
+    const [leftHandLandmarks, setLeftHandLandmarks] = useState(null); // Live MediaPipe landmarks
+    const [rightHandLandmarks, setRightHandLandmarks] = useState(null); // Live MediaPipe landmarks
+    const [robotJointStates, setRobotJointStates] = useState({}); // Current joint states for the robot
+
+    // Refs for DOM elements and MediaPipe instances
     const urdfInputRef = useRef(null);
     const meshesInputRef = useRef(null);
-    const videoRef = useRef(null);
+    const videoRef = useRef(null); // Hidden video for MediaPipe camera feed input
     const holistic = useRef(null);
     const cameraInstance = useRef(null);
-    const canvasRef = useRef(null);
+    const canvasRef = useRef(null); // React-Three-Fiber Canvas ref
+    const drawingCanvasRef = useRef(null); // HTML Canvas for MediaPipe landmark drawing (visible)
+    const recordedVideoPlayerRef = useRef(null); // Ref for the playback video element in UrdfUploader
+    
+    const loadedRobotInstanceRef = useRef(null); // Ref to hold the loaded Three.js robot object
+    const [cameraUpdateTrigger, setCameraUpdateTrigger] = useState(0); // Trigger for CameraUpdater
 
-    const [poseLandmarks, setPoseLandmarks] = useState(null);
-    const [leftHandLandmarks, setLeftHandLandmarks] = useState(null);
-    const [rightHandLandmarks, setRightHandLandmarks] = useState(null);
-    const [robotJointStates, setRobotJointStates] = useState({});
-    const loadedRobotInstanceRef = useRef(null);
-    const [cameraUpdateTrigger, setCameraUpdateTrigger] = useState(0);
+    const currentJointStatesBufferRef = useRef([]); // Buffer to accumulate joint states during recording
+    const isRecordingActiveRef = useRef(false); // Ref for recording active status 
 
+
+    // For joint state smoothing
+    const prevJointStatesRef = useRef({}); // Store previous joint states for interpolation
+    const smoothingFactor = 0.3; // Adjust this value (0.1 to 0.9) for more/less smoothing
+
+    // Memoized URLs for URDF and meshes
     const urdfContentBlobUrl = useMemo(() => {
         if (urdfFile) {
             return URL.createObjectURL(urdfFile);
@@ -57,9 +79,10 @@ const UrdfUploader = () => {
         return obj;
     }, [meshFiles]);
 
+    // Cleanup for mesh Blob URLs
     useEffect(() => {
         return () => {
-            console.log("[UrdfUploader Cleanup] Revoking mesh Blob URLs...");
+            console.log("[UrdfUploader Cleanup] Revoking mesh Blob URLs.");
             if (fileMapForModel) {
                 Object.values(fileMapForModel).forEach(blobUrl => {
                     try { URL.revokeObjectURL(blobUrl); } catch (e) { console.warn("Error revoking mesh Blob URL:", e); }
@@ -68,12 +91,13 @@ const UrdfUploader = () => {
         };
     }, [fileMapForModel]);
 
-    const mapRange = (value, inMin, inMax, outMin, outMax) => {
+    // Utility functions for angle calculation
+    const mapRange = useCallback((value, inMin, inMax, outMin, outMax) => {
         const clampedValue = Math.max(inMin, Math.min(value, inMax));
         return (clampedValue - inMin) * (outMax - outMin) / (inMax - inMin) + outMin;
-    };
+    }, []);
 
-    const calculateAngle = (a, b, c) => {
+    const calculateAngle = useCallback((a, b, c) => {
         if (!a || !b || !c) return 0;
         const rad = Math.atan2(c.y - b.y, c.x - b.x) - Math.atan2(a.y - b.y, a.x - b.x);
         let angle = Math.abs(rad);
@@ -81,123 +105,241 @@ const UrdfUploader = () => {
             angle = 2 * Math.PI - angle;
         }
         return angle;
-    };
+    }, []);
 
-    const onResults = useCallback((results) => {
-        if (results.poseLandmarks) {
-            setPoseLandmarks(results.poseLandmarks);
+    // Callback from VideoRecorder to update recording status and collect data
+    const handleRecordingStatusChange = useCallback((message, isRecordingNow) => {
+        setStatus(message);
+        isRecordingActiveRef.current = isRecordingNow; // Update the ref directly 
+        console.log("[UrdfUploader] isRecordingActiveRef updated to:", isRecordingNow); 
+
+        if (!isRecordingNow) { // Recording stopped
+            console.log("[UrdfUploader] Joint states buffer length on recording stop:", currentJointStatesBufferRef.current.length); 
+
+            if (currentJointStatesBufferRef.current.length > 0) {
+                setRecordedJointStatesSequence([...currentJointStatesBufferRef.current]); 
+                console.log("[UrdfUploader] Final recorded joint states sequence length:", currentJointStatesBufferRef.current.length);
+            } else {
+                setRecordedJointStatesSequence([]);
+                console.warn("[UrdfUploader] No joint states recorded during session.");
+            }
+            currentJointStatesBufferRef.current = []; // Clear buffer
+        } else { // Recording started
+            currentJointStatesBufferRef.current = []; // Ensure buffer is clear at start
+            setRecordedJointStatesSequence([]); // Clear any previous recorded sequence
+            prevJointStatesRef.current = {}; // Reset smoothing on new recording
+            console.log("[UrdfUploader] Recording started. Joint states buffer cleared.");
+        }
+    }, []);
+
+    // Callback from VideoRecorder when video blob is available
+    const handleVideoAvailable = useCallback((blob) => {
+        setRecordedVideoBlob(blob);
+    }, []);
+
+    // Callback from VideoRecorder to start playing recorded joint states
+    const handlePlayRecordedData = useCallback((playbackData) => { 
+        setIsPlayingRecordedData(true); // Signal that recorded data is now the source for the robot
+        prevJointStatesRef.current = {}; // Reset smoothing for playback
+
+        const videoPlayer = recordedVideoPlayerRef.current;
+        if (!videoPlayer || playbackData.length === 0) {
+            console.warn("[UrdfUploader] Playback data or video player not ready. Robot will not animate.");
+            setIsPlayingRecordedData(false); // No data to play, so reset the flag
+            setRobotJointStates({}); // Clear robot pose
+            return;
+        }
+
+        const frameRate = 30; // Assumed recording FPS
+
+        // Function to update robot pose based on video time
+        const updateRobotPose = () => {
+            // These conditions are crucial to stop the animation loop
+            if (!isPlayingRecordedVideo || !isPlayingRecordedData || !videoPlayer || videoPlayer.paused || videoPlayer.ended) {
+                console.log("[UrdfUploader] Stopping robot animation loop (video stopped, paused, ended, or data playback disabled).");
+                setRobotJointStates({}); // Reset robot pose to default
+                setIsPlayingRecordedData(false); // Ensure this flag is false on stop
+                if (videoPlayer) {
+                    videoPlayer.removeEventListener('timeupdate', updateRobotPose); 
+                    videoPlayer.removeEventListener('pause', updateRobotPose); 
+                    videoPlayer.removeEventListener('ended', updateRobotPose); 
+                }
+                return;
+            }
+
+            const currentTime = videoPlayer.currentTime; 
+            const totalFrames = playbackData.length; 
+            const frameIndexFloat = currentTime * frameRate; 
+
+            const lowerIndex = Math.floor(frameIndexFloat);
+            const upperIndex = Math.ceil(frameIndexFloat);
+            const alpha = frameIndexFloat - lowerIndex; 
+
+            let interpolatedStates = {};
+
+            if (lowerIndex >= 0 && lowerIndex < totalFrames) {
+                const currentFrameStates = playbackData[lowerIndex]; 
+                if (upperIndex < totalFrames && alpha > 0) {
+                    const nextFrameStates = playbackData[upperIndex]; 
+                    for (const jointName in currentFrameStates) {
+                        if (typeof currentFrameStates[jointName] === 'number' && typeof nextFrameStates[jointName] === 'number') {
+                            interpolatedStates[jointName] = currentFrameStates[jointName] + (nextFrameStates[jointName] - currentFrameStates[jointName]) * alpha;
+                        } else {
+                            interpolatedStates[jointName] = currentFrameStates[jointName]; 
+                        }
+                    }
+                } else {
+                    interpolatedStates = { ...currentFrameStates };
+                }
+            } else if (totalFrames > 0) { 
+                interpolatedStates = { ...playbackData[totalFrames - 1] }; 
+            } else {
+                console.warn("[UrdfUploader] No recorded joint data to animate for current frame.");
+                interpolatedStates = {};
+            }
             
-            // Head control (using nose landmark)
+            const finalSmoothedStates = {};
+            const previousStates = prevJointStatesRef.current; 
+            for (const jointName in interpolatedStates) {
+                if (typeof interpolatedStates[jointName] === 'number') {
+                    const currentVal = previousStates[jointName] !== undefined ? previousStates[jointName] : interpolatedStates[jointName];
+                    finalSmoothedStates[jointName] = currentVal + (interpolatedStates[jointName] - currentVal) * smoothingFactor;
+                }
+            }
+            // Ensure React detects the state change by always providing a new object
+            setRobotJointStates({ ...finalSmoothedStates });
+            prevJointStatesRef.current = { ...finalSmoothedStates }; 
+        };
+        
+        // Add event listeners for video playback to drive robot animation
+        videoPlayer.removeEventListener('timeupdate', updateRobotPose);
+        videoPlayer.removeEventListener('pause', updateRobotPose); 
+        videoPlayer.removeEventListener('ended', updateRobotPose); 
+
+        videoPlayer.addEventListener('timeupdate', updateRobotPose);
+        videoPlayer.addEventListener('pause', updateRobotPose); 
+        videoPlayer.addEventListener('ended', updateRobotPose); 
+        
+        // Call once immediately to set initial pose from the start of the recorded data
+        updateRobotPose();
+
+        console.log("[UrdfUploader] Robot animation started, synchronized with video playback.");
+
+    }, [isPlayingRecordedVideo, smoothingFactor, recordedVideoPlayerRef]);
+
+    // MediaPipe results processing (for live robot control)
+    const onResults = useCallback((results) => {
+        // !!! IMPORTANT: If recorded data is playing, EXIT IMMEDIATELY to prevent live control !!!
+        if (isPlayingRecordedData) {
+            // console.log("[UrdfUploader] onResults: Skipping live update as recorded data is playing."); // Debugging
+            return;
+        }
+        
+        // Use the ref for recording status
+        const isCurrentlyRecording = isRecordingActiveRef.current; 
+        // console.log("onResults: isCurrentlyRecording =", isCurrentlyRecording); 
+
+        let newJointStates = {};
+
+        if (results.poseLandmarks) {
+            setPoseLandmarks(results.poseLandmarks); // Always update raw landmarks for drawing on canvas
+            
             if (results.poseLandmarks[0] && loadedRobotInstanceRef.current) {
                 const headYaw = mapRange(results.poseLandmarks[0].x, 0, 1, Math.PI, -Math.PI);
                 const headPitch = mapRange(results.poseLandmarks[0].y, 0, 1, Math.PI, -Math.PI);
-                
-                setRobotJointStates(prev => ({
-                    ...prev,
-                    'HEAD_JOINT0': -headYaw,
-                    'HEAD_JOINT1': -headPitch,
-                }));
+                newJointStates = { ...newJointStates, 'HEAD_JOINT0': -headYaw, 'HEAD_JOINT1': -headPitch };
             }
         } else {
             setPoseLandmarks(null);
         }
 
-        // Left arm control
         if (results.leftHandLandmarks) {
-        setLeftHandLandmarks(results.leftHandLandmarks);
-
-        if (loadedRobotInstanceRef.current) {
-            const wrist = results.leftHandLandmarks[0];
-            const elbow = results.poseLandmarks?.[13]; // Left elbow landmark
-            const shoulder = results.poseLandmarks?.[11]; // Left shoulder landmark
-
-            if (wrist && elbow && shoulder) {
-                const shoulderPitch = mapRange(wrist.y, 0, 0.75, Math.PI, -Math.PI/6);
-                const shoulderRoll = mapRange(wrist.x, 0, 1, Math.PI/4, -Math.PI/4);
-
-                // Calculate left elbow angle
-                const leftElbowAngleRad = calculateAngle(shoulder, elbow, wrist);
-
-                // *** MODIFIED ELBOW MAPPING LOGIC ***
-                // InMin/InMax: Adjusted based on common human elbow range.
-                // A straight arm is close to Math.PI (180 deg), a bent arm is closer to 0 or 0.1-0.3 (0-15 deg).
-                const humanElbowMinAngle = 0.1; // Small angle when arm is fully bent (e.g., 5-10 degrees)
-                const humanElbowMaxAngle = Math.PI - 0.1; // Close to 180 degrees for a straight arm
-
-                // OutMin/OutMax: Adjusted for the robot's elbow joint.
-                // Assuming 0 for straight arm and Math.PI/2 (90 degrees) for a bent arm.
-                // We want to map straight human arm (humanElbowMaxAngle) to straight robot arm (robotElbowStraightAngle).
-                // We want to map bent human arm (humanElbowMinAngle) to bent robot arm (robotElbowBentAngle).
-                const robotElbowStraightAngle = 0; // Robot's angle when arm is straight
-                const robotElbowBentAngle = Math.PI / 2; // Robot's angle when arm is bent to 90 degrees
-
-                // To fix the inversion: map high human angle to low robot angle, and low human angle to high robot angle.
-                const elbowJointAngle = mapRange(leftElbowAngleRad, humanElbowMinAngle, humanElbowMaxAngle, robotElbowBentAngle, robotElbowStraightAngle);
-
-                setRobotJointStates(prev => ({
-                    ...prev,
-                    'LARM_JOINT0': -shoulderRoll,
-                    'LARM_JOINT1': -shoulderPitch,
-                    'LARM_JOINT4': -elbowJointAngle, // Removed the negation here, as mapRange handles it
-                }));
+            setLeftHandLandmarks(results.leftHandLandmarks);
+            if (loadedRobotInstanceRef.current) {
+                const wrist = results.leftHandLandmarks[0];
+                const elbow = results.poseLandmarks?.[13]; // Left elbow landmark
+                const shoulder = results.poseLandmarks?.[11]; // Left shoulder landmark
+                if (wrist && elbow && shoulder) {
+                    const shoulderPitch = mapRange(wrist.y, 0, 0.75, Math.PI, -Math.PI/6);
+                    const shoulderRoll = mapRange(wrist.x, 0, 1, Math.PI/4, -Math.PI/4);
+                    const leftElbowAngleRad = calculateAngle(shoulder, elbow, wrist);
+                    const humanElbowMinAngle = 0.1;
+                    const humanElbowMaxAngle = Math.PI - 0.1;
+                    const robotElbowStraightAngle = 0;
+                    const robotElbowBentAngle = Math.PI / 2;
+                    const elbowJointAngle = mapRange(leftElbowAngleRad, humanElbowMinAngle, humanElbowMaxAngle, robotElbowBentAngle, robotElbowStraightAngle);
+                    newJointStates = { ...newJointStates, 'LARM_JOINT0': -shoulderRoll, 'LARM_JOINT1': -shoulderPitch, 'LARM_JOINT4': -elbowJointAngle };
+                }
             }
+        } else {
+            setLeftHandLandmarks(null);
         }
-    } else {
-        setLeftHandLandmarks(null);
-    }
 
-        // Right arm control
         if (results.rightHandLandmarks) {
-        setRightHandLandmarks(results.rightHandLandmarks);
+            setRightHandLandmarks(results.rightHandLandmarks);
+            if (loadedRobotInstanceRef.current) {
+                const wrist = results.rightHandLandmarks[0];
+                const elbow = results.poseLandmarks?.[14]; // Right elbow landmark
+                const shoulder = results.poseLandmarks?.[12]; // Right shoulder landmark
+                if (wrist && elbow && shoulder) {
+                    const shoulderPitch = mapRange(wrist.y, 0, 0.75, Math.PI, -Math.PI/6);
+                    const shoulderRoll = mapRange(wrist.x, 0, 1, Math.PI/4, -Math.PI/4);
+                    const rightElbowAngleRad = calculateAngle(shoulder, elbow, wrist);
+                    const humanElbowMinAngle = 0.1;
+                    const humanElbowMaxAngle = Math.PI - 0.1;
+                    const robotElbowStraightAngle = 0;
+                    const robotElbowBentAngle = Math.PI / 2;
+                    const elbowJointAngle = mapRange(rightElbowAngleRad, humanElbowMinAngle, humanElbowMaxAngle, robotElbowBentAngle, robotElbowStraightAngle);
+                    newJointStates = { ...newJointStates, 'RARM_JOINT0': -shoulderRoll, 'RARM_JOINT1': -shoulderPitch, 'RARM_JOINT4': -elbowJointAngle };
+                }
+            }
+        } else {
+            setRightHandLandmarks(null);
+        }
 
-        if (loadedRobotInstanceRef.current) {
-            const wrist = results.rightHandLandmarks[0];
-            const elbow = results.poseLandmarks?.[14]; // Right elbow landmark
-            const shoulder = results.poseLandmarks?.[12]; // Right shoulder landmark
+        // Apply updated joint states and record if active
+        // Only update robotJointStates if not playing recorded data
+        if (Object.keys(newJointStates).length > 0) {
+            const currentSmoothedStates = {};
+            const previousStates = prevJointStatesRef.current;
+            for (const jointName in newJointStates) {
+                if (typeof newJointStates[jointName] === 'number') {
+                    const currentVal = previousStates[jointName] !== undefined ? previousStates[jointName] : newJointStates[jointName];
+                    currentSmoothedStates[jointName] = currentVal + (newJointStates[jointName] - currentVal) * smoothingFactor;
+                }
+            }
+            setRobotJointStates({ ...currentSmoothedStates }); // Update live robot
+            prevJointStatesRef.current = { ...currentSmoothedStates }; // Store for live smoothing
 
-            if (wrist && elbow && shoulder) {
-                const shoulderPitch = mapRange(wrist.y, 0, 0.75, Math.PI, -Math.PI/6);
-                const shoulderRoll = mapRange(wrist.x, 0, 1, Math.PI/4, -Math.PI/4);
-
-                // Calculate right elbow angle
-                const rightElbowAngleRad = calculateAngle(shoulder, elbow, wrist);
-
-                // *** MODIFIED ELBOW MAPPING LOGIC ***
-                const humanElbowMinAngle = 0.1;
-                const humanElbowMaxAngle = Math.PI - 0.1;
-
-                const robotElbowStraightAngle = 0;
-                const robotElbowBentAngle = Math.PI / 2;
-
-                const elbowJointAngle = mapRange(rightElbowAngleRad, humanElbowMinAngle, humanElbowMaxAngle, robotElbowBentAngle, robotElbowStraightAngle);
-
-                setRobotJointStates(prev => ({
-                    ...prev,
-                    'RARM_JOINT0': -shoulderRoll,
-                    'RARM_JOINT1': -shoulderPitch,
-                    'RARM_JOINT4': -elbowJointAngle, 
-                }));
+            if (isCurrentlyRecording) { // Use ref value here
+                currentJointStatesBufferRef.current.push({ ...newJointStates }); 
+                // console.log("Joint states added to buffer. Current buffer size:", currentJointStatesBufferRef.current.length); 
+            }
+        } else {
+            if (!results.poseLandmarks && !results.leftHandLandmarks && !results.rightHandLandmarks) {
+                setPoseLandmarks(null); 
+            }
+            if (isCurrentlyRecording && Object.keys(prevJointStatesRef.current).length > 0) { 
+                 currentJointStatesBufferRef.current.push({ ...prevJointStatesRef.current }); 
             }
         }
-    } else {
-        setRightHandLandmarks(null);
-        }
-    }, []);
+    }, [isPlayingRecordedData, mapRange, calculateAngle, smoothingFactor]); 
 
+    // MediaPipe initialization and cleanup 
     useEffect(() => {
         const initializeMediaPipe = async () => {
             try {
-                console.log("[UrdfUploader] Initializing MediaPipe Holistic...");
+                console.log("[UrdfUploader] Initializing MediaPipe Holistic.");
                 
                 holistic.current = new Holistic({
                     locateFile: (file) => {
-                        return `https://cdn.jsdelivr.net/npm/@mediapipe/holistic/${file}`;
+                        return `https://cdn.jsdelivr.net/npm/@mediapipe/holistic/${file}`; 
                     }
                 });
 
                 holistic.current.setOptions({
-                    modelComplexity: 1,
-                    smoothLandmarks: true,
+                    modelComplexity: 0, 
+                    smoothLandmarks: true, 
                     enableSegmentation: false,
                     smoothSegmentation: false,
                     refineFaceLandmarks: true,
@@ -218,7 +360,7 @@ const UrdfUploader = () => {
                         height: 480
                     });
 
-                    console.log("[UrdfUploader] Starting camera...");
+                    console.log("[UrdfUploader] Starting camera.");
                     cameraInstance.current.start();
                 }
             } catch (error) {
@@ -230,7 +372,7 @@ const UrdfUploader = () => {
         initializeMediaPipe();
 
         return () => {
-            console.log("[UrdfUploader] Cleaning up MediaPipe resources...");
+            console.log("[UrdfUploader] Cleaning up MediaPipe resources.");
             if (cameraInstance.current) {
                 cameraInstance.current.stop();
             }
@@ -240,15 +382,14 @@ const UrdfUploader = () => {
         };
     }, [onResults]);
 
+    // Effect for drawing MediaPipe landmarks on the visible canvas 
     useEffect(() => {
         const video = videoRef.current;
-        if (!video) return;
+        const drawingCanvas = drawingCanvasRef.current;
+        
+        if (!video || !drawingCanvas) return;
 
-        const canvas = document.createElement('canvas');
-        canvas.width = video.videoWidth;
-        canvas.height = video.videoHeight;
-        const ctx = canvas.getContext('2d');
-        canvasRef.current = canvas;
+        const ctx = drawingCanvas.getContext('2d');
 
         const drawLandmarks = (landmarks, color) => {
             if (!landmarks) return;
@@ -258,42 +399,59 @@ const UrdfUploader = () => {
             ctx.lineWidth = 2;
             
             for (const landmark of landmarks) {
-                const x = landmark.x * video.videoWidth;
-                const y = landmark.y * video.videoHeight;
+                const x = landmark.x * drawingCanvas.width;
+                const y = landmark.y * drawingCanvas.height;
                 
                 ctx.beginPath();
-                ctx.arc(x, y, 5, 0, 2 * Math.PI,true);
+                ctx.arc(x, y, 5, 0, 2 * Math.PI, true);
                 ctx.fill();
             }
         };
 
-        const draw = () => {
-            if (video.videoWidth === 0 || video.videoHeight === 0) return;
+        let animationFrameId;
+
+        const drawLoop = () => {
+            if (video.videoWidth > 0 && video.videoHeight > 0) {
+                if (drawingCanvas.width !== video.videoWidth || drawingCanvas.height !== video.videoHeight) {
+                    drawingCanvas.width = video.videoWidth;
+                    drawingCanvas.height = video.videoHeight;
+                }
+            } else if (drawingCanvas.width === 0 || drawingCanvas.height === 0) {
+                drawingCanvas.width = 640;
+                drawingCanvas.height = 480;
+            }
+
+            ctx.clearRect(0, 0, drawingCanvas.width, drawingCanvas.height);
+            ctx.drawImage(video, 0, 0, drawingCanvas.width, drawingCanvas.height);
             
-            ctx.clearRect(0, 0, canvas.width, canvas.height);
-            ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+            if (!isPlayingRecordedData) { // Only draw landmarks on live feed
+                if (poseLandmarks) drawLandmarks(poseLandmarks, '#4285F4');
+                if (leftHandLandmarks) drawLandmarks(leftHandLandmarks, '#EA4335');
+                if (rightHandLandmarks) drawLandmarks(rightHandLandmarks, '#34A853');
+            }
             
-            if (poseLandmarks) drawLandmarks(poseLandmarks, '#4285F4');
-            if (leftHandLandmarks) drawLandmarks(leftHandLandmarks, '#EA4335');
-            if (rightHandLandmarks) drawLandmarks(rightHandLandmarks, '#34A853');
-            
-            requestAnimationFrame(draw);
+            animationFrameId = requestAnimationFrame(drawLoop);
         };
         
-        draw();
-        
-        video.parentNode.insertBefore(canvas, video);
-        video.style.display = 'none';
+        const handleVideoMetadataLoaded = () => {
+            console.log("[UrdfUploader] Video metadata loaded. Starting landmark drawing loop.");
+            if (!animationFrameId) {
+                drawLoop();
+            }
+        };
+
+        video.addEventListener('loadedmetadata', handleVideoMetadataLoaded);
+        if (video.readyState >= 2) {
+            handleVideoMetadataLoaded();
+        }
         
         return () => {
-            if (canvasRef.current) {
-                canvasRef.current.remove();
-            }
-            if (video) {
-                video.style.display = 'block';
+            video.removeEventListener('loadedmetadata', handleVideoMetadataLoaded);
+            if (animationFrameId) {
+                cancelAnimationFrame(animationFrameId);
             }
         };
-    }, [poseLandmarks, leftHandLandmarks, rightHandLandmarks]);
+    }, [poseLandmarks, leftHandLandmarks, rightHandLandmarks, isPlayingRecordedData]);
 
     const handleUrdfFileChange = useCallback((event) => {
         const file = event.target.files[0];
@@ -311,7 +469,7 @@ const UrdfUploader = () => {
         const files = Array.from(event.target.files);
         const newMeshFiles = new Map();
         
-        setStatus("Processing mesh files...");
+        setStatus("Processing mesh files.");
         
         try {
             for (const file of files) {
@@ -342,7 +500,7 @@ const UrdfUploader = () => {
         }
 
         setRobotLoadRequested(true);
-        setStatus("Loading robot model...");
+        setStatus("Loading robot model.");
         console.log("[UrdfUploader] Robot load requested with URDF:", urdfFile.name, "and", meshFiles.size, "mesh files");
     }, [urdfFile, meshFiles]);
 
@@ -359,13 +517,25 @@ const UrdfUploader = () => {
         setRobotLoadRequested(false);
         loadedRobotInstanceRef.current = null;
         setRobotJointStates({});
+        setRecordedVideoBlob(null);
+        setIsPlayingRecordedVideo(false);
+        setRecordedJointStatesSequence([]);
+        setIsPlayingRecordedData(false);
+        currentJointStatesBufferRef.current = [];
         setStatus("Files cleared. Upload new URDF and mesh files.");
         
         if (urdfInputRef.current) urdfInputRef.current.value = '';
         if (meshesInputRef.current) meshesInputRef.current.value = '';
         
+        if (recordedVideoPlayerRef.current) {
+            recordedVideoPlayerRef.current.src = '';
+            recordedVideoPlayerRef.current.load();
+        }
+
         console.log("[UrdfUploader] All files and states cleared.");
     }, []);
+
+    const currentRobotJointStates = robotJointStates;
 
     return (
         <div className="min-h-screen bg-gradient-to-br from-slate-950 via-purple-950 to-slate-900 text-white">
@@ -442,6 +612,20 @@ const UrdfUploader = () => {
                             <p className="text-sm text-cyan-300">{status}</p>
                         </div>
 
+                        {/* VideoRecorder Component */}
+                        <VideoRecorder
+                            recordingSourceRef={drawingCanvasRef} 
+                            onRecordingStatusChange={handleRecordingStatusChange}
+                            onVideoAvailable={handleVideoAvailable}
+                            isRobotLoaded={!!loadedRobotInstanceRef.current} 
+                            recordedVideoBlob={recordedVideoBlob} 
+                            isPlayingRecordedVideo={isPlayingRecordedVideo} 
+                            setIsPlayingRecordedVideo={setIsPlayingRecordedVideo} 
+                            recordedJointStatesData={recordedJointStatesSequence}
+                            onPlayRecordedData={handlePlayRecordedData}
+                            recordedVideoPlayerRef={recordedVideoPlayerRef}
+                        />
+
                         <div className="bg-gradient-to-br from-purple-800/20 to-cyan-800/20 backdrop-blur-sm rounded-xl p-4 border border-purple-500/20">
                             <h3 className="text-sm font-semibold mb-3 text-purple-300">Body Controls:</h3>
                             <ul className="text-xs space-y-2 text-slate-300">
@@ -466,93 +650,127 @@ const UrdfUploader = () => {
                     </div>
 
                     <div className="flex-1 relative">
-    {robotLoadRequested && urdfContentBlobUrl ? (
-        // The background is now set to white
-        <div className="w-full h-full bg-white">
-            <Canvas
-                camera={{ position: [2, 2, 2], fov: 50 }}
-                style={{ width: '100%', height: '100%' }}
-            >
-                {/* Lights adjusted slightly for a brighter scene */}
-                <ambientLight intensity={0.8} />
-                <directionalLight position={[5, 5, 5]} intensity={1} />
-                <pointLight position={[-5, 5, 5]} intensity={0.3} />
-                
-                <Suspense fallback={
-                    // Fallback text color is changed to black to be visible on white
-                    <Text
-                        position={[0, 0, 0]}
-                        fontSize={0.5}
-                        color="black" 
-                        anchorX="center"
-                        anchorY="middle"
-                    >
-                        Loading Robot...
-                    </Text>
-                }>
-                    <UrdfRobotModel
-                        urdfContent={urdfContentBlobUrl}
-                        fileMap={fileMapForModel}
-                        jointStates={robotJointStates}
-                        selectedRobotName="uploaded_robot"
-                        onRobotLoaded={handleRobotLoaded}
-                        initialPosition={[0, 0, 0]}
-                        scale={1.0}
-                    />
-                </Suspense>
+                        {robotLoadRequested && urdfContentBlobUrl ? (
+                            <div className="w-full h-full bg-white">
+                                <Canvas
+                                    camera={{ position: [2, 2, 2], fov: 50 }}
+                                    style={{ width: '100%', height: '100%' }}
+                                    ref={canvasRef}
+                                >
+                                    <ambientLight intensity={0.8} />
+                                    <directionalLight position={[5, 5, 5]} intensity={1} />
+                                    <pointLight position={[-5, 5, 5]} intensity={0.3} />
+                                    
+                                    <Suspense fallback={
+                                        <Text
+                                            position={[0, 0, 0]}
+                                            fontSize={0.5}
+                                            color="black" 
+                                            anchorX="center"
+                                            anchorY="middle"
+                                        >
+                                            Loading Robot...
+                                        </Text>
+                                    }>
+                                        <UrdfRobotModel
+                                            urdfContent={urdfContentBlobUrl}
+                                            fileMap={fileMapForModel}
+                                            jointStates={currentRobotJointStates}
+                                            selectedRobotName="uploaded_robot"
+                                            onRobotLoaded={handleRobotLoaded}
+                                            initialPosition={[0, 0, 0]}
+                                            scale={1.0}
+                                        />
+                                    </Suspense>
 
-                <CameraUpdater
-                    loadedRobotInstanceRef={loadedRobotInstanceRef}
-                    triggerUpdate={cameraUpdateTrigger}
-                />
-                
-                <Environment preset="warehouse" />
-                
-                {/* The ground plane remains, providing a surface for the robot */}
-                <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, -0.01, 0]}>
-                    <planeGeometry args={[10, 10]} />
-                    <meshStandardMaterial color="#f0f0f0" />
-                </mesh>
-            </Canvas>
-        </div>
-    ) : (
-        // The placeholder background is also set to white
-        <div className="w-full h-full flex items-center justify-center bg-white">
-            <div className="text-center">
-                {/* Icon container style updated for a light background */}
-                <div className="w-24 h-24 mx-auto mb-6 bg-gray-100 border border-gray-200 rounded-full flex items-center justify-center">
-                    {/* Icon color changed to be visible */}
-                    <svg className="w-12 h-12 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
-                    </svg>
-                </div>
-                {/* Text colors updated for a light background */}
-                <h3 className="text-2xl font-semibold text-gray-800 mb-2">Upload Robot Files</h3>
-                <p className="text-gray-500">Select URDF and mesh files to load your robot</p>
-            </div>
-        </div>
-    )}
-</div>
-                    {/* Smaller camera feed positioned in upper right corner */}
-                    <div className="absolute right-3 top-0 w-16 h-16 m-2">
-                        <video
-                            ref={videoRef}
-                            className="w-full h-full bg-black rounded-lg border border-purple-500/30"
-                            autoPlay
-                            muted
-                            playsInline
-                        />
-                        {poseLandmarks && (
-                            <div className="absolute top-1 left-1 bg-gradient-to-r from-emerald-500 to-teal-500 text-white px-2 py-0.5 rounded-full text-xs font-semibold shadow-lg">
-                                👤
+                                    <CameraUpdater
+                                        loadedRobotInstanceRef={loadedRobotInstanceRef}
+                                        triggerUpdate={cameraUpdateTrigger}
+                                    />
+                                    
+                                    <Environment preset="warehouse" />
+                                    
+                                    <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, -0.01, 0]}>
+                                        <planeGeometry args={[10, 10]} />
+                                        <meshStandardMaterial color="#f0f0f0" />
+                                    </mesh>
+                                </Canvas>
                             </div>
-                        )}
-                        {!poseLandmarks && (
-                            <div className="absolute top-1 left-1 bg-gradient-to-r from-slate-600 to-slate-700 text-white px-2 py-0.5 rounded-full text-xs font-semibold">
-                                ❌
+                        ) : (
+                            <div className="w-full h-full flex items-center justify-center bg-white">
+                                <div className="text-center">
+                                    <div className="w-24 h-24 mx-auto mb-6 bg-gray-100 border border-gray-200 rounded-full flex items-center justify-center">
+                                        <svg className="w-12 h-12 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
+                                        </svg>
+                                    </div>
+                                    <h3 className="text-2xl font-semibold text-gray-800 mb-2">Upload Robot Files</h3>
+                                    <p className="text-gray-500">Select URDF and mesh files to load your robot</p>
+                                </div>
                             </div>
                         )}
                     </div>
+                    
+                    {/* MediaPipe Camera Feed (hidden input) */}
+                    <video
+                        ref={videoRef}
+                        style={{ display: 'none' }} // This video is hidden, used only as source for MediaPipe
+                        autoPlay
+                        muted
+                        playsInline
+                    />
+
+                    {/* Display Area for Camera Feeds - side by side */}
+                    <div className="absolute top-3 right-3 m-2 z-10 flex flex-row space-x-2">
+                        {/* Live Camera Feed (MediaPipe processed output) */}
+                        <div className="w-48 h-48 relative bg-black rounded-lg border-2 border-purple-500/50 shadow-lg">
+                            <canvas
+                                ref={drawingCanvasRef}
+                                className="w-full h-full rounded-lg"
+                                // Always show live feed unless recorded video is explicitly playing AND available
+                                style={{ display: (isPlayingRecordedVideo && recordedVideoBlob) ? 'none' : 'block' }} 
+                            />
+                            {/* Only show live tracking status if live feed is displayed */}
+                            {(!isPlayingRecordedVideo || !recordedVideoBlob) && (
+                                <>
+                                    {poseLandmarks && (
+                                        <div className="absolute top-1 left-1 bg-gradient-to-r from-emerald-500 to-teal-500 text-white px-2 py-0.5 rounded-full text-xs font-semibold shadow-lg">
+                                            👤 Tracking
+                                        </div>
+                                    )}
+                                    {!poseLandmarks && (
+                                        <div className="absolute top-1 left-1 bg-gradient-to-r from-slate-600 to-slate-700 text-white px-2 py-0.5 rounded-full text-xs font-semibold">
+                                            ❌ No Tracking
+                                        </div>
+                                    )}
+                                </>
+                            )}
+                        </div>
+
+                        {/* Recorded Video Playback */}
+                        <div className="w-48 h-48 relative bg-black rounded-lg border-2 border-purple-500/50 shadow-lg">
+                            <video
+                                ref={recordedVideoPlayerRef} // Use the ref declared at the top
+                                className="w-full h-full rounded-lg"
+                                autoPlay={false} // Controlled by VideoRecorder
+                                muted // Often good for initial playback to avoid unexpected sound
+                                playsInline
+                                // Show this video only if there's a blob and playback is active
+                                style={{ display: (isPlayingRecordedVideo && recordedVideoBlob) ? 'block' : 'none' }}
+                            />
+                            {(isPlayingRecordedVideo && recordedVideoBlob) && (
+                                <div className="absolute top-1 left-1 bg-gradient-to-r from-blue-500 to-indigo-500 text-white px-2 py-0.5 rounded-full text-xs font-semibold shadow-lg">
+                                    ▶️ Playback
+                                </div>
+                            )}
+                            {/* Display a placeholder if no recorded video available, and not playing live */}
+                            {!recordedVideoBlob && (
+                                <div className="absolute inset-0 flex items-center justify-center text-gray-500 text-xs text-center p-2">
+                                    Recorded video will appear here.
+                                </div>
+                            )}
+                        </div>
+                    </div> {/* End of camera feeds display area */}
                 </div>
             </div>
         </div>

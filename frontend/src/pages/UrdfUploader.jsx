@@ -49,7 +49,8 @@ const UrdfUploader = () => {
     const canvasRef = useRef(null); // React-Three-Fiber Canvas ref
     const drawingCanvasRef = useRef(null); // HTML Canvas for MediaPipe landmark drawing (visible)
     const recordedVideoPlayerRef = useRef(null); // Ref for the playback video element in UrdfUploader
-    const hiddenMediapipeInputCanvasRef = useRef(null); // NEW: Hidden canvas to feed recorded video frames to MediaPipe
+    const hiddenMediapipeInputCanvasRef = useRef(null);
+    const [useSmoothing, setUseSmoothing] = useState(true); // NEW: Hidden canvas to feed recorded video frames to MediaPipe
     
     const loadedRobotInstanceRef = useRef(null); // Ref to hold the loaded Three.js robot object
     const [cameraUpdateTrigger, setCameraUpdateTrigger] = useState(0); // Trigger for CameraUpdater
@@ -58,8 +59,10 @@ const UrdfUploader = () => {
     const isRecordingActiveRef = useRef(false); // Ref for recording active status 
 
     // For joint state smoothing
+    // const [useSmoothing, setUseSmoothing] = useState(true); // Smoothing enabled by default
+    const smoothingFactor = 0.2
     const prevJointStatesRef = useRef({}); // Store previous joint states for interpolation
-    const smoothingFactor = 0.3; // Adjust this value (0.1 to 0.9) for more/less smoothing
+     // Adjust this value (0.1 to 0.9) for more/less smoothing
 
     // Memoized URLs for URDF and meshes
     const urdfContentBlobUrl = useMemo(() => {
@@ -92,20 +95,20 @@ const UrdfUploader = () => {
     }, [fileMapForModel]);
 
     // Utility functions for angle calculation
-    const mapRange = useCallback((value, inMin, inMax, outMin, outMax) => {
-        const clampedValue = Math.max(inMin, Math.min(value, inMax));
-        return (clampedValue - inMin) * (outMax - outMin) / (inMax - inMin) + outMax; // Corrected mapping direction
-    }, []);
+    // const mapRange = useCallback((value, inMin, inMax, outMin, outMax) => {
+    //     const clampedValue = Math.max(inMin, Math.min(value, inMax));
+    //     return (clampedValue - inMin) * (outMax - outMin) / (inMax - inMin) + outMax; // Corrected mapping direction
+    // }, []);
 
-    const calculateAngle = useCallback((a, b, c) => {
-        if (!a || !b || !c) return 0;
-        const rad = Math.atan2(c.y - b.y, c.x - b.x) - Math.atan2(a.y - b.y, a.x - b.x);
-        let angle = Math.abs(rad);
-        if (angle > Math.PI) {
-            angle = 2 * Math.PI - angle;
-        }
-        return angle;
-    }, []);
+    // const calculateAngle = useCallback((a, b, c) => {
+    //     if (!a || !b || !c) return 0;
+    //     const rad = Math.atan2(c.y - b.y, c.x - b.x) - Math.atan2(a.y - b.y, a.x - b.x);
+    //     let angle = Math.abs(rad);
+    //     if (angle > Math.PI) {
+    //         angle = 2 * Math.PI - angle;
+    //     }
+    //     return angle;
+    // }, []);
 
     // Callback from VideoRecorder to update recording status and collect data
     const handleRecordingStatusChange = useCallback((message, isRecordingNow) => {
@@ -234,95 +237,109 @@ const UrdfUploader = () => {
     }, [recordedVideoBlob]); // Dependency array for handlePlayRecordedData
 
     // MediaPipe results processing (receives results from whichever source Holistic is processing)
-    const onResults = useCallback((results) => {
-        // Update raw landmarks for drawing on the visible canvas
-        setPoseLandmarks(results.poseLandmarks || null);
-        setLeftHandLandmarks(results.leftHandLandmarks || null);
-        setRightHandLandmarks(results.rightHandLandmarks || null);
+    const mapRange = useCallback((value, inMin, inMax, outMin, outMax) => {
+    const clampedValue = Math.max(inMin, Math.min(value, inMax));
+    return (clampedValue - inMin) * (outMax - outMin) / (inMax - inMin) + outMin;
+}, []);
 
-        // --- ROBOT CONTROL LOGIC ---
-        // This part runs based on whatever MediaPipe is currently seeing (live or recorded frame)
-        let newJointStates = {};
+const calculateAngle = useCallback((a, b, c) => {
+    if (!a || !b || !c) return 0;
+    const rad = Math.atan2(c.y - b.y, c.x - b.x) - Math.atan2(a.y - b.y, a.x - b.x);
+    let angle = Math.abs(rad);
+    if (angle > Math.PI) {
+        angle = 2 * Math.PI - angle;
+    }
+    return angle;
+}, []);
 
-        if (results.poseLandmarks) {
-            setPoseLandmarks(results.poseLandmarks); // Always update raw landmarks for drawing on canvas
-            
-            if (results.poseLandmarks[0] && loadedRobotInstanceRef.current) {
-                const headYaw = mapRange(results.poseLandmarks[0].x, 0, 1, Math.PI, -Math.PI);
-                const headPitch = mapRange(results.poseLandmarks[0].y, 0, 1, Math.PI, -Math.PI);
-                newJointStates = { ...newJointStates, 'HEAD_JOINT0': -headYaw, 'HEAD_JOINT1': -headPitch };
-            }
-        } else {
-            setPoseLandmarks(null);
-        }
+// In the onResults callback:
+const onResults = useCallback((results) => {
+    setPoseLandmarks(results.poseLandmarks || null);
+    setLeftHandLandmarks(results.leftHandLandmarks || null);
+    setRightHandLandmarks(results.rightHandLandmarks || null);
 
-        if (results.leftHandLandmarks) {
-            setLeftHandLandmarks(results.leftHandLandmarks);
-            if (loadedRobotInstanceRef.current) {
-                const wrist = results.leftHandLandmarks[0];
-                const elbow = results.poseLandmarks?.[13]; // Left elbow landmark
-                const shoulder = results.poseLandmarks?.[11]; // Left shoulder landmark
-                if (wrist && elbow && shoulder) {
-                    const shoulderPitch = mapRange(wrist.y, 0, 0.75, Math.PI, -Math.PI/6);
-                    const shoulderRoll = mapRange(wrist.x, 0, 1, Math.PI/4, -Math.PI/4);
-                    const leftElbowAngleRad = calculateAngle(shoulder, elbow, wrist);
-                    const humanElbowMinAngle = 0.1;
-                    const humanElbowMaxAngle = Math.PI - 0.1;
-                    const robotElbowStraightAngle = 0;
-                    const robotElbowBentAngle = Math.PI / 2;
-                    const elbowJointAngle = mapRange(leftElbowAngleRad, humanElbowMinAngle, humanElbowMaxAngle, robotElbowBentAngle, robotElbowStraightAngle);
-                    newJointStates = { ...newJointStates, 'LARM_JOINT0': -shoulderRoll, 'LARM_JOINT1': -shoulderPitch, 'LARM_JOINT4': -elbowJointAngle };
-                }
-            }
-        } else {
-            setLeftHandLandmarks(null);
-        }
+    let newJointStates = {};
 
-        if (results.rightHandLandmarks) {
-            setRightHandLandmarks(results.rightHandLandmarks);
-            if (loadedRobotInstanceRef.current) {
-                const wrist = results.rightHandLandmarks[0];
-                const elbow = results.poseLandmarks?.[14]; // Right elbow landmark
-                const shoulder = results.poseLandmarks?.[12]; // Right shoulder landmark
-                if (wrist && elbow && shoulder) {
-                    const shoulderPitch = mapRange(wrist.y, 0, 0.75, Math.PI, -Math.PI/6);
-                    const shoulderRoll = mapRange(wrist.x, 0, 1, Math.PI/4, -Math.PI/4);
-                    const rightElbowAngleRad = calculateAngle(shoulder, elbow, wrist);
-                    const humanElbowMinAngle = 0.1;
-                    const humanElbowMaxAngle = Math.PI - 0.1;
-                    const robotElbowStraightAngle = 0;
-                    const robotElbowBentAngle = Math.PI / 2;
-                    const elbowJointAngle = mapRange(rightElbowAngleRad, humanElbowMinAngle, humanElbowMaxAngle, robotElbowBentAngle, robotElbowStraightAngle);
-                    newJointStates = { ...newJointStates, 'RARM_JOINT0': -shoulderRoll, 'RARM_JOINT1': -shoulderPitch, 'RARM_JOINT4': -elbowJointAngle };
-                }
-            }
-        } else {
-            setRightHandLandmarks(null);
-        }
-        // Apply smoothing and update robotJointStates
-        if (Object.keys(newJointStates).length > 0) {
+    // Head control
+    if (results.poseLandmarks?.[0] && loadedRobotInstanceRef.current) {
+        const headYaw = mapRange(results.poseLandmarks[0].x, 0, 1, Math.PI, -Math.PI);
+        const headPitch = mapRange(results.poseLandmarks[0].y, 0, 1, Math.PI, -Math.PI);
+        newJointStates = { 
+            ...newJointStates, 
+            'HEAD_JOINT0': -headYaw,
+            'HEAD_JOINT1': -headPitch 
+        };
+    }
+
+    // Left arm control
+    if (results.leftHandLandmarks && results.poseLandmarks?.[11] && results.poseLandmarks?.[13]) {
+        const wrist = results.leftHandLandmarks[0];
+        const elbow = results.poseLandmarks[13];
+        const shoulder = results.poseLandmarks[11];
+
+        const shoulderPitch = mapRange(wrist.y, 0, 0.75, Math.PI, -Math.PI/6);
+        const shoulderRoll = mapRange(wrist.x, 0, 1, Math.PI/4, -Math.PI/4);
+        const leftElbowAngleRad = calculateAngle(shoulder, elbow, wrist);
+        const elbowJointAngle = mapRange(leftElbowAngleRad, 0.1, Math.PI - 0.1, Math.PI/2, 0);
+
+        newJointStates = { 
+            ...newJointStates, 
+            'LARM_JOINT0': -shoulderRoll,
+            'LARM_JOINT1': -shoulderPitch,
+            'LARM_JOINT4': -elbowJointAngle
+        };
+    }
+
+    // Right arm control
+    if (results.rightHandLandmarks && results.poseLandmarks?.[12] && results.poseLandmarks?.[14]) {
+        const wrist = results.rightHandLandmarks[0];
+        const elbow = results.poseLandmarks[14];
+        const shoulder = results.poseLandmarks[12];
+
+        const shoulderPitch = mapRange(wrist.y, 0, 0.75, Math.PI, -Math.PI/6);
+        const shoulderRoll = mapRange(wrist.x, 0, 1, Math.PI/4, -Math.PI/4);
+        const rightElbowAngleRad = calculateAngle(shoulder, elbow, wrist);
+        const elbowJointAngle = mapRange(rightElbowAngleRad, 0.1, Math.PI - 0.1, Math.PI/2, 0);
+
+        newJointStates = { 
+            ...newJointStates, 
+            'RARM_JOINT0': -shoulderRoll,
+            'RARM_JOINT1': -shoulderPitch,
+            'RARM_JOINT4': -elbowJointAngle
+        };
+    }
+
+    // Apply smoothing if enabled
+    if (Object.keys(newJointStates).length > 0) {
+        let finalJointStates = newJointStates;
+        
+        if (useSmoothing) {
             const currentSmoothedStates = {};
             const previousStates = prevJointStatesRef.current;
+            
             for (const jointName in newJointStates) {
                 if (typeof newJointStates[jointName] === 'number') {
-                    const currentVal = previousStates[jointName] !== undefined ? previousStates[jointName] : newJointStates[jointName];
-                    currentSmoothedStates[jointName] = currentVal + (newJointStates[jointName] - currentVal) * smoothingFactor;
+                    const currentVal = previousStates[jointName] !== undefined ? 
+                        previousStates[jointName] : newJointStates[jointName];
+                    currentSmoothedStates[jointName] = 
+                        currentVal + (newJointStates[jointName] - currentVal) * smoothingFactor;
                 }
             }
-            setRobotJointStates({ ...currentSmoothedStates }); // Update robot
-            prevJointStatesRef.current = { ...currentSmoothedStates }; // Store for smoothing
-
-            // Record joint states only if explicitly recording
-            if (isRecordingActiveRef.current) { 
-                currentJointStatesBufferRef.current.push({ ...newJointStates }); 
-            }
+            finalJointStates = currentSmoothedStates;
+            prevJointStatesRef.current = currentSmoothedStates;
         } else {
-            // If no new landmarks, but was recording, push previous state to maintain continuity
-            if (isRecordingActiveRef.current && Object.keys(prevJointStatesRef.current).length > 0) { 
-                 currentJointStatesBufferRef.current.push({ ...prevJointStatesRef.current }); 
-            }
+            prevJointStatesRef.current = newJointStates;
         }
-    }, [mapRange, calculateAngle, smoothingFactor]);
+        
+        setRobotJointStates(finalJointStates);
+        
+        if (isRecordingActiveRef.current) {
+            currentJointStatesBufferRef.current.push({ ...finalJointStates });
+        }
+    } else if (isRecordingActiveRef.current && Object.keys(prevJointStatesRef.current).length > 0) {
+        currentJointStatesBufferRef.current.push({ ...prevJointStatesRef.current });
+    }
+}, [mapRange, calculateAngle, useSmoothing, smoothingFactor]);
 
     // MediaPipe initialization and cleanup 
     useEffect(() => {
@@ -617,6 +634,25 @@ const UrdfUploader = () => {
                                 </div>
                             )}
                         </div>
+                            
+                        <div className="flex items-center mb-4">
+    <label className="flex items-center cursor-pointer">
+        <div className="relative">
+            <input 
+                type="checkbox" 
+                className="sr-only" 
+                checked={useSmoothing}
+                onChange={() => setUseSmoothing(!useSmoothing)}
+            />
+            <div className={`block w-14 h-8 rounded-full ${useSmoothing ? 'bg-purple-600' : 'bg-gray-600'}`}></div>
+            <div className={`dot absolute left-1 top-1 bg-white w-6 h-6 rounded-full transition ${useSmoothing ? 'transform translate-x-6' : ''}`}></div>
+        </div>
+        <div className="ml-3 text-sm font-medium text-purple-300">
+            Motion Smoothing
+        </div>
+    </label>
+</div>
+
 
                         <div className="flex flex-col space-y-3 mb-6">
                             <button

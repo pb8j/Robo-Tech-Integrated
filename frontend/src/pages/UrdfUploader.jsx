@@ -6,7 +6,7 @@ import { Text } from '@react-three/drei';
 import { Holistic } from '@mediapipe/holistic';
 import { Camera } from '@mediapipe/camera_utils';
 import { UrdfRobotModel, CameraUpdater } from '../components/UrdfRobotModel';
-import VideoRecorder from '../components/VideoRecorder';
+import VideoRecorder from '../components/VideoRecorder'; // Keep VideoRecorder
 
 const ROBOT_MODELS = {
     hexapod_robot: {
@@ -30,32 +30,32 @@ const UrdfUploader = () => {
     
     // Video recording and playback states
     const [recordedVideoBlob, setRecordedVideoBlob] = useState(null);
-    const [isPlayingRecordedVideo, setIsPlayingRecordedVideo] = useState(false);
+    const [isPlayingRecordedVideo, setIsPlayingRecordedVideo] = useState(false); // Controls playback video element visibility
     const [recordedJointStatesSequence, setRecordedJointStatesSequence] = useState([]); 
-    const [isPlayingRecordedData, setIsPlayingRecordedData] = useState(false); // Controls robot animation from recorded data
+    const [isRecording, setIsRecording] = useState(false); // State for recording status (from VideoRecorder)
 
     // MediaPipe and Robot control states
-    const [poseLandmarks, setPoseLandmarks] = useState(null); // Live MediaPipe landmarks
-    const [leftHandLandmarks, setLeftHandLandmarks] = useState(null); // Live MediaPipe landmarks
-    const [rightHandLandmarks, setRightHandLandmarks] = useState(null); // Live MediaPipe landmarks
+    const [poseLandmarks, setPoseLandmarks] = useState(null); // MediaPipe landmarks
+    const [leftHandLandmarks, setLeftHandLandmarks] = useState(null); // MediaPipe landmarks
+    const [rightHandLandmarks, setRightHandLandmarks] = useState(null); // MediaPipe landmarks
     const [robotJointStates, setRobotJointStates] = useState({}); // Current joint states for the robot
 
     // Refs for DOM elements and MediaPipe instances
     const urdfInputRef = useRef(null);
     const meshesInputRef = useRef(null);
-    const videoRef = useRef(null); // Hidden video for MediaPipe camera feed input
+    const videoRef = useRef(null); // Hidden video for LIVE MediaPipe camera feed input
     const holistic = useRef(null);
-    const cameraInstance = useRef(null);
+    const cameraInstance = useRef(null); // Controls LIVE camera feed for Mediapipe
     const canvasRef = useRef(null); // React-Three-Fiber Canvas ref
     const drawingCanvasRef = useRef(null); // HTML Canvas for MediaPipe landmark drawing (visible)
     const recordedVideoPlayerRef = useRef(null); // Ref for the playback video element in UrdfUploader
+    const hiddenMediapipeInputCanvasRef = useRef(null); // NEW: Hidden canvas to feed recorded video frames to MediaPipe
     
     const loadedRobotInstanceRef = useRef(null); // Ref to hold the loaded Three.js robot object
     const [cameraUpdateTrigger, setCameraUpdateTrigger] = useState(0); // Trigger for CameraUpdater
 
     const currentJointStatesBufferRef = useRef([]); // Buffer to accumulate joint states during recording
     const isRecordingActiveRef = useRef(false); // Ref for recording active status 
-
 
     // For joint state smoothing
     const prevJointStatesRef = useRef({}); // Store previous joint states for interpolation
@@ -94,7 +94,7 @@ const UrdfUploader = () => {
     // Utility functions for angle calculation
     const mapRange = useCallback((value, inMin, inMax, outMin, outMax) => {
         const clampedValue = Math.max(inMin, Math.min(value, inMax));
-        return (clampedValue - inMin) * (outMax - outMin) / (inMax - inMin) + outMin;
+        return (clampedValue - inMin) * (outMax - outMin) / (inMax - inMin) + outMax; // Corrected mapping direction
     }, []);
 
     const calculateAngle = useCallback((a, b, c) => {
@@ -111,134 +111,137 @@ const UrdfUploader = () => {
     const handleRecordingStatusChange = useCallback((message, isRecordingNow) => {
         setStatus(message);
         isRecordingActiveRef.current = isRecordingNow; // Update the ref directly 
+        setIsRecording(isRecordingNow); // Update state for button disable logic
         console.log("[UrdfUploader] isRecordingActiveRef updated to:", isRecordingNow); 
 
         if (!isRecordingNow) { // Recording stopped
             console.log("[UrdfUploader] Joint states buffer length on recording stop:", currentJointStatesBufferRef.current.length); 
-
-            if (currentJointStatesBufferRef.current.length > 0) {
-                setRecordedJointStatesSequence([...currentJointStatesBufferRef.current]); 
-                console.log("[UrdfUploader] Final recorded joint states sequence length:", currentJointStatesBufferRef.current.length);
-            } else {
-                setRecordedJointStatesSequence([]);
-                console.warn("[UrdfUploader] No joint states recorded during session.");
-            }
+            setRecordedJointStatesSequence([...currentJointStatesBufferRef.current]); // Store recorded sequence
             currentJointStatesBufferRef.current = []; // Clear buffer
+            console.log("[UrdfUploader] Final recorded joint states sequence length:", recordedJointStatesSequence.length);
         } else { // Recording started
             currentJointStatesBufferRef.current = []; // Ensure buffer is clear at start
             setRecordedJointStatesSequence([]); // Clear any previous recorded sequence
             prevJointStatesRef.current = {}; // Reset smoothing on new recording
             console.log("[UrdfUploader] Recording started. Joint states buffer cleared.");
         }
-    }, []);
+    }, [recordedJointStatesSequence.length]); // Added dependency to allow state update
 
     // Callback from VideoRecorder when video blob is available
     const handleVideoAvailable = useCallback((blob) => {
         setRecordedVideoBlob(blob);
     }, []);
 
-    // Callback from VideoRecorder to start playing recorded joint states
-    const handlePlayRecordedData = useCallback((playbackData) => { 
-        setIsPlayingRecordedData(true); // Signal that recorded data is now the source for the robot
-        prevJointStatesRef.current = {}; // Reset smoothing for playback
-
-        const videoPlayer = recordedVideoPlayerRef.current;
-        if (!videoPlayer || playbackData.length === 0) {
-            console.warn("[UrdfUploader] Playback data or video player not ready. Robot will not animate.");
-            setIsPlayingRecordedData(false); // No data to play, so reset the flag
-            setRobotJointStates({}); // Clear robot pose
+    // Playback Logic - Drive MediaPipe from recorded video frames
+    const handlePlayRecordedData = useCallback(async () => { 
+        if (!recordedVideoBlob || !recordedVideoPlayerRef.current || !hiddenMediapipeInputCanvasRef.current || !holistic.current) {
+            alert("⚠️ No recorded video or essential elements for playback.");
             return;
         }
 
-        const frameRate = 30; // Assumed recording FPS
+        // Stop live MediaPipe processing (Camera instance)
+        if (cameraInstance.current) {
+            cameraInstance.current.stop();
+            console.log("[UrdfUploader] Live MediaPipe processing stopped for playback.");
+        }
+        
+        setIsPlayingRecordedVideo(true); // Signal that playback is active
 
-        // Function to update robot pose based on video time
-        const updateRobotPose = () => {
-            // These conditions are crucial to stop the animation loop
-            if (!isPlayingRecordedVideo || !isPlayingRecordedData || !videoPlayer || videoPlayer.paused || videoPlayer.ended) {
-                console.log("[UrdfUploader] Stopping robot animation loop (video stopped, paused, ended, or data playback disabled).");
-                setRobotJointStates({}); // Reset robot pose to default
-                setIsPlayingRecordedData(false); // Ensure this flag is false on stop
-                if (videoPlayer) {
-                    videoPlayer.removeEventListener('timeupdate', updateRobotPose); 
-                    videoPlayer.removeEventListener('pause', updateRobotPose); 
-                    videoPlayer.removeEventListener('ended', updateRobotPose); 
-                }
-                return;
-            }
+        const video = recordedVideoPlayerRef.current;
+        const canvas = hiddenMediapipeInputCanvasRef.current;
+        const ctx = canvas.getContext("2d");
 
-            const currentTime = videoPlayer.currentTime; 
-            const totalFrames = playbackData.length; 
-            const frameIndexFloat = currentTime * frameRate; 
+        // Clear previous source and load new blob
+        video.src = URL.createObjectURL(recordedVideoBlob);
+        video.controls = true; // Show playback controls
+        video.loop = false;
 
-            const lowerIndex = Math.floor(frameIndexFloat);
-            const upperIndex = Math.ceil(frameIndexFloat);
-            const alpha = frameIndexFloat - lowerIndex; 
-
-            let interpolatedStates = {};
-
-            if (lowerIndex >= 0 && lowerIndex < totalFrames) {
-                const currentFrameStates = playbackData[lowerIndex]; 
-                if (upperIndex < totalFrames && alpha > 0) {
-                    const nextFrameStates = playbackData[upperIndex]; 
-                    for (const jointName in currentFrameStates) {
-                        if (typeof currentFrameStates[jointName] === 'number' && typeof nextFrameStates[jointName] === 'number') {
-                            interpolatedStates[jointName] = currentFrameStates[jointName] + (nextFrameStates[jointName] - currentFrameStates[jointName]) * alpha;
-                        } else {
-                            interpolatedStates[jointName] = currentFrameStates[jointName]; 
-                        }
-                    }
-                } else {
-                    interpolatedStates = { ...currentFrameStates };
-                }
-            } else if (totalFrames > 0) { 
-                interpolatedStates = { ...playbackData[totalFrames - 1] }; 
-            } else {
-                console.warn("[UrdfUploader] No recorded joint data to animate for current frame.");
-                interpolatedStates = {};
-            }
-            
-            const finalSmoothedStates = {};
-            const previousStates = prevJointStatesRef.current; 
-            for (const jointName in interpolatedStates) {
-                if (typeof interpolatedStates[jointName] === 'number') {
-                    const currentVal = previousStates[jointName] !== undefined ? previousStates[jointName] : interpolatedStates[jointName];
-                    finalSmoothedStates[jointName] = currentVal + (interpolatedStates[jointName] - currentVal) * smoothingFactor;
-                }
-            }
-            // Ensure React detects the state change by always providing a new object
-            setRobotJointStates({ ...finalSmoothedStates });
-            prevJointStatesRef.current = { ...finalSmoothedStates }; 
+        // Set canvas dimensions to match video
+        video.onloadedmetadata = () => {
+            canvas.width = video.videoWidth;
+            canvas.height = video.videoHeight;
+            video.play().catch(e => console.error("Error playing recorded video:", e));
         };
-        
-        // Add event listeners for video playback to drive robot animation
-        videoPlayer.removeEventListener('timeupdate', updateRobotPose);
-        videoPlayer.removeEventListener('pause', updateRobotPose); 
-        videoPlayer.removeEventListener('ended', updateRobotPose); 
 
-        videoPlayer.addEventListener('timeupdate', updateRobotPose);
-        videoPlayer.addEventListener('pause', updateRobotPose); 
-        videoPlayer.addEventListener('ended', updateRobotPose); 
-        
-        // Call once immediately to set initial pose from the start of the recorded data
-        updateRobotPose();
+        let animationFrameId;
 
-        console.log("[UrdfUploader] Robot animation started, synchronized with video playback.");
+        const processRecordedFrame = async () => {
+            if (!video.paused && !video.ended) {
+                // Draw video frame to hidden canvas
+                ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+                try {
+                    // Send hidden canvas image to Holistic for processing
+                    await holistic.current.send({ image: canvas });
+                } catch (e) {
+                    console.error("🎥 Error sending recorded frame to Holistic:", e);
+                }
+                animationFrameId = requestAnimationFrame(processRecordedFrame);
+            }
+        };
 
-    }, [isPlayingRecordedVideo, smoothingFactor, recordedVideoPlayerRef]);
+        video.onplay = () => {
+            console.log("▶️ Playing recorded video with pose tracking...");
+            animationFrameId = requestAnimationFrame(processRecordedFrame);
+        };
 
-    // MediaPipe results processing (for live robot control)
+        video.onpause = () => {
+            cancelAnimationFrame(animationFrameId);
+            console.log("⏸️ Playback paused.");
+        };
+
+        video.onended = () => {
+            cancelAnimationFrame(animationFrameId);
+            setIsPlayingRecordedVideo(false); // Playback finished
+            console.log("✅ Playback finished. Re-enabling live camera.");
+
+            // Revoke blob URL to free memory
+            if (video.src) URL.revokeObjectURL(video.src);
+            video.src = '';
+            video.controls = false;
+
+            // Restart live MediaPipe processing
+            if (cameraInstance.current) {
+                try {
+                    cameraInstance.current.start();
+                } catch (e) {
+                    console.error("Error restarting camera after playback:", e);
+                }
+            }
+        };
+
+        console.log("🎬 Playback initiated for recorded video.");
+
+        return () => { // Cleanup function for when component unmounts or playback is interrupted
+            cancelAnimationFrame(animationFrameId);
+            if (video) {
+                video.onplay = null;
+                video.onpause = null;
+                video.onended = null;
+                video.pause(); // Ensure video stops
+                if (video.src) URL.revokeObjectURL(video.src); // Clean up blob URL
+                video.src = '';
+                video.controls = false;
+            }
+            if (cameraInstance.current) { // Ensure live camera restarts if playback was ongoing
+                try {
+                    cameraInstance.current.start();
+                } catch (e) {
+                    console.error("Error restarting camera on cleanup:", e);
+                }
+            }
+        };
+
+    }, [recordedVideoBlob]); // Dependency array for handlePlayRecordedData
+
+    // MediaPipe results processing (receives results from whichever source Holistic is processing)
     const onResults = useCallback((results) => {
-        // !!! IMPORTANT: If recorded data is playing, EXIT IMMEDIATELY to prevent live control !!!
-        if (isPlayingRecordedData) {
-            // console.log("[UrdfUploader] onResults: Skipping live update as recorded data is playing."); // Debugging
-            return;
-        }
-        
-        // Use the ref for recording status
-        const isCurrentlyRecording = isRecordingActiveRef.current; 
-        // console.log("onResults: isCurrentlyRecording =", isCurrentlyRecording); 
+        // Update raw landmarks for drawing on the visible canvas
+        setPoseLandmarks(results.poseLandmarks || null);
+        setLeftHandLandmarks(results.leftHandLandmarks || null);
+        setRightHandLandmarks(results.rightHandLandmarks || null);
 
+        // --- ROBOT CONTROL LOGIC ---
+        // This part runs based on whatever MediaPipe is currently seeing (live or recorded frame)
         let newJointStates = {};
 
         if (results.poseLandmarks) {
@@ -296,9 +299,7 @@ const UrdfUploader = () => {
         } else {
             setRightHandLandmarks(null);
         }
-
-        // Apply updated joint states and record if active
-        // Only update robotJointStates if not playing recorded data
+        // Apply smoothing and update robotJointStates
         if (Object.keys(newJointStates).length > 0) {
             const currentSmoothedStates = {};
             const previousStates = prevJointStatesRef.current;
@@ -308,22 +309,20 @@ const UrdfUploader = () => {
                     currentSmoothedStates[jointName] = currentVal + (newJointStates[jointName] - currentVal) * smoothingFactor;
                 }
             }
-            setRobotJointStates({ ...currentSmoothedStates }); // Update live robot
-            prevJointStatesRef.current = { ...currentSmoothedStates }; // Store for live smoothing
+            setRobotJointStates({ ...currentSmoothedStates }); // Update robot
+            prevJointStatesRef.current = { ...currentSmoothedStates }; // Store for smoothing
 
-            if (isCurrentlyRecording) { // Use ref value here
+            // Record joint states only if explicitly recording
+            if (isRecordingActiveRef.current) { 
                 currentJointStatesBufferRef.current.push({ ...newJointStates }); 
-                // console.log("Joint states added to buffer. Current buffer size:", currentJointStatesBufferRef.current.length); 
             }
         } else {
-            if (!results.poseLandmarks && !results.leftHandLandmarks && !results.rightHandLandmarks) {
-                setPoseLandmarks(null); 
-            }
-            if (isCurrentlyRecording && Object.keys(prevJointStatesRef.current).length > 0) { 
+            // If no new landmarks, but was recording, push previous state to maintain continuity
+            if (isRecordingActiveRef.current && Object.keys(prevJointStatesRef.current).length > 0) { 
                  currentJointStatesBufferRef.current.push({ ...prevJointStatesRef.current }); 
             }
         }
-    }, [isPlayingRecordedData, mapRange, calculateAngle, smoothingFactor]); 
+    }, [mapRange, calculateAngle, smoothingFactor]);
 
     // MediaPipe initialization and cleanup 
     useEffect(() => {
@@ -352,7 +351,8 @@ const UrdfUploader = () => {
                 if (videoRef.current) {
                     cameraInstance.current = new Camera(videoRef.current, {
                         onFrame: async () => {
-                            if (holistic.current && videoRef.current) {
+                            if (holistic.current && videoRef.current && !isPlayingRecordedVideo) {
+                                // Only send live video frames to MediaPipe if not playing recorded video
                                 await holistic.current.send({ image: videoRef.current });
                             }
                         },
@@ -375,12 +375,14 @@ const UrdfUploader = () => {
             console.log("[UrdfUploader] Cleaning up MediaPipe resources.");
             if (cameraInstance.current) {
                 cameraInstance.current.stop();
+                cameraInstance.current = null; // Clear ref on cleanup
             }
             if (holistic.current) {
                 holistic.current.close();
+                holistic.current = null; // Clear ref on cleanup
             }
         };
-    }, [onResults]);
+    }, [onResults, isPlayingRecordedVideo]); // Added isPlayingRecordedVideo as dependency
 
     // Effect for drawing MediaPipe landmarks on the visible canvas 
     useEffect(() => {
@@ -411,10 +413,18 @@ const UrdfUploader = () => {
         let animationFrameId;
 
         const drawLoop = () => {
-            if (video.videoWidth > 0 && video.videoHeight > 0) {
-                if (drawingCanvas.width !== video.videoWidth || drawingCanvas.height !== video.videoHeight) {
-                    drawingCanvas.width = video.videoWidth;
-                    drawingCanvas.height = video.videoHeight;
+            // Determine the source video element for drawing
+            const sourceVideo = isPlayingRecordedVideo ? recordedVideoPlayerRef.current : videoRef.current;
+            
+            if (!sourceVideo || sourceVideo.readyState < 2) { // Ensure source video is ready
+                animationFrameId = requestAnimationFrame(drawLoop);
+                return;
+            }
+
+            if (sourceVideo.videoWidth > 0 && sourceVideo.videoHeight > 0) {
+                if (drawingCanvas.width !== sourceVideo.videoWidth || drawingCanvas.height !== sourceVideo.videoHeight) {
+                    drawingCanvas.width = sourceVideo.videoWidth;
+                    drawingCanvas.height = sourceVideo.videoHeight;
                 }
             } else if (drawingCanvas.width === 0 || drawingCanvas.height === 0) {
                 drawingCanvas.width = 640;
@@ -422,13 +432,14 @@ const UrdfUploader = () => {
             }
 
             ctx.clearRect(0, 0, drawingCanvas.width, drawingCanvas.height);
-            ctx.drawImage(video, 0, 0, drawingCanvas.width, drawingCanvas.height);
             
-            if (!isPlayingRecordedData) { // Only draw landmarks on live feed
-                if (poseLandmarks) drawLandmarks(poseLandmarks, '#4285F4');
-                if (leftHandLandmarks) drawLandmarks(leftHandLandmarks, '#EA4335');
-                if (rightHandLandmarks) drawLandmarks(rightHandLandmarks, '#34A853');
-            }
+            // Draw the current video frame
+            ctx.drawImage(sourceVideo, 0, 0, drawingCanvas.width, drawingCanvas.height);
+
+            // Draw landmarks on top
+            if (poseLandmarks) drawLandmarks(poseLandmarks, '#4285F4');
+            if (leftHandLandmarks) drawLandmarks(leftHandLandmarks, '#EA4335');
+            if (rightHandLandmarks) drawLandmarks(rightHandLandmarks, '#34A853');
             
             animationFrameId = requestAnimationFrame(drawLoop);
         };
@@ -440,18 +451,25 @@ const UrdfUploader = () => {
             }
         };
 
-        video.addEventListener('loadedmetadata', handleVideoMetadataLoaded);
-        if (video.readyState >= 2) {
-            handleVideoMetadataLoaded();
+        // Attach listener to both potential video sources for metadata loaded
+        if (videoRef.current) {
+            videoRef.current.addEventListener('loadedmetadata', handleVideoMetadataLoaded);
+            if (videoRef.current.readyState >= 2) handleVideoMetadataLoaded();
+        }
+        if (recordedVideoPlayerRef.current) {
+            recordedVideoPlayerRef.current.addEventListener('loadedmetadata', handleVideoMetadataLoaded);
+            if (recordedVideoPlayerRef.current.readyState >= 2) handleVideoMetadataLoaded();
         }
         
         return () => {
-            video.removeEventListener('loadedmetadata', handleVideoMetadataLoaded);
+            // Clean up listeners for both potential video sources
+            if (videoRef.current) videoRef.current.removeEventListener('loadedmetadata', handleVideoMetadataLoaded);
+            if (recordedVideoPlayerRef.current) recordedVideoPlayerRef.current.removeEventListener('loadedmetadata', handleVideoMetadataLoaded);
             if (animationFrameId) {
                 cancelAnimationFrame(animationFrameId);
             }
         };
-    }, [poseLandmarks, leftHandLandmarks, rightHandLandmarks, isPlayingRecordedData]);
+    }, [poseLandmarks, leftHandLandmarks, rightHandLandmarks, isPlayingRecordedVideo]); // Only isPlayingRecordedVideo determines the source for drawing
 
     const handleUrdfFileChange = useCallback((event) => {
         const file = event.target.files[0];
@@ -520,7 +538,7 @@ const UrdfUploader = () => {
         setRecordedVideoBlob(null);
         setIsPlayingRecordedVideo(false);
         setRecordedJointStatesSequence([]);
-        setIsPlayingRecordedData(false);
+        // setIsPlayingRecordedData(false); // This is managed by handlePlayRecordedData cleanup
         currentJointStatesBufferRef.current = [];
         setStatus("Files cleared. Upload new URDF and mesh files.");
         
@@ -530,8 +548,16 @@ const UrdfUploader = () => {
         if (recordedVideoPlayerRef.current) {
             recordedVideoPlayerRef.current.src = '';
             recordedVideoPlayerRef.current.load();
+            recordedVideoPlayerRef.current.controls = false;
         }
-
+        // Ensure camera is active after clearing
+        if (cameraInstance.current) {
+            try {
+                cameraInstance.current.start();
+            } catch (e) {
+                console.error("Error restarting camera on clear files:", e);
+            }
+        }
         console.log("[UrdfUploader] All files and states cleared.");
     }, []);
 
@@ -624,6 +650,7 @@ const UrdfUploader = () => {
                             recordedJointStatesData={recordedJointStatesSequence}
                             onPlayRecordedData={handlePlayRecordedData}
                             recordedVideoPlayerRef={recordedVideoPlayerRef}
+                            isRecording={isRecording} // Pass recording status
                         />
 
                         <div className="bg-gradient-to-br from-purple-800/20 to-cyan-800/20 backdrop-blur-sm rounded-xl p-4 border border-purple-500/20">
@@ -720,6 +747,9 @@ const UrdfUploader = () => {
                         playsInline
                     />
 
+                    {/* NEW: Hidden canvas to feed recorded video frames to MediaPipe */}
+                    <canvas ref={hiddenMediapipeInputCanvasRef} style={{ display: 'none' }} />
+
                     {/* Display Area for Camera Feeds - side by side */}
                     <div className="absolute top-3 right-3 m-2 z-10 flex flex-row space-x-2">
                         {/* Live Camera Feed (MediaPipe processed output) */}
@@ -728,45 +758,44 @@ const UrdfUploader = () => {
                                 ref={drawingCanvasRef}
                                 className="w-full h-full rounded-lg"
                                 // Always show live feed unless recorded video is explicitly playing AND available
-                                style={{ display: (isPlayingRecordedVideo && recordedVideoBlob) ? 'none' : 'block' }} 
+                                // This canvas now draws the active video source (live OR recorded)
+                                style={{ display: 'block' }} 
                             />
-                            {/* Only show live tracking status if live feed is displayed */}
-                            {(!isPlayingRecordedVideo || !recordedVideoBlob) && (
-                                <>
-                                    {poseLandmarks && (
-                                        <div className="absolute top-1 left-1 bg-gradient-to-r from-emerald-500 to-teal-500 text-white px-2 py-0.5 rounded-full text-xs font-semibold shadow-lg">
-                                            👤 Tracking
-                                        </div>
-                                    )}
-                                    {!poseLandmarks && (
-                                        <div className="absolute top-1 left-1 bg-gradient-to-r from-slate-600 to-slate-700 text-white px-2 py-0.5 rounded-full text-xs font-semibold">
-                                            ❌ No Tracking
-                                        </div>
-                                    )}
-                                </>
-                            )}
+                            {/* Tracking status for the currently active feed */}
+                            <>
+                                {poseLandmarks && (
+                                    <div className="absolute top-1 left-1 bg-gradient-to-r from-emerald-500 to-teal-500 text-white px-2 py-0.5 rounded-full text-xs font-semibold shadow-lg">
+                                        👤 Tracking
+                                    </div>
+                                )}
+                                {!poseLandmarks && (
+                                    <div className="absolute top-1 left-1 bg-gradient-to-r from-slate-600 to-slate-700 text-white px-2 py-0.5 rounded-full text-xs font-semibold">
+                                        ❌ No Tracking
+                                    </div>
+                                )}
+                            </>
                         </div>
 
-                        {/* Recorded Video Playback */}
+                        {/* Recorded Video Playback (hidden, but its content is drawn to drawingCanvasRef) */}
                         <div className="w-48 h-48 relative bg-black rounded-lg border-2 border-purple-500/50 shadow-lg">
                             <video
                                 ref={recordedVideoPlayerRef} // Use the ref declared at the top
                                 className="w-full h-full rounded-lg"
-                                autoPlay={false} // Controlled by VideoRecorder
+                                autoPlay={false} // Controlled by handlePlayRecordedData
                                 muted // Often good for initial playback to avoid unexpected sound
                                 playsInline
-                                // Show this video only if there's a blob and playback is active
-                                style={{ display: (isPlayingRecordedVideo && recordedVideoBlob) ? 'block' : 'none' }}
+                                // This video element is actually hidden, its content is drawn to drawingCanvasRef
+                                style={{ display: 'none' }}
                             />
-                            {(isPlayingRecordedVideo && recordedVideoBlob) && (
-                                <div className="absolute top-1 left-1 bg-gradient-to-r from-blue-500 to-indigo-500 text-white px-2 py-0.5 rounded-full text-xs font-semibold shadow-lg">
-                                    ▶️ Playback
+                            {/* Placeholder/indicator for recorded video */}
+                            {recordedVideoBlob && !isPlayingRecordedVideo && (
+                                <div className="absolute inset-0 flex items-center justify-center text-emerald-400 text-xs text-center p-2 bg-emerald-900/20 rounded-lg">
+                                    Recorded video loaded.
                                 </div>
                             )}
-                            {/* Display a placeholder if no recorded video available, and not playing live */}
                             {!recordedVideoBlob && (
                                 <div className="absolute inset-0 flex items-center justify-center text-gray-500 text-xs text-center p-2">
-                                    Recorded video will appear here.
+                                    No recorded video yet.
                                 </div>
                             )}
                         </div>

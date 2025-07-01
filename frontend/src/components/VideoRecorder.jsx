@@ -36,6 +36,7 @@ const VideoRecorder = ({
 
         let stream;
         try {
+            // Get stream from the canvas
             stream = recordingSourceRef.current.captureStream(30); // 30 FPS
             if (!stream) {
                 throw new Error("Failed to capture stream from recording source.");
@@ -146,7 +147,8 @@ const VideoRecorder = ({
 
         playerElement.onended = () => {
             console.log("[VideoRecorder] Recorded video playback ended.");
-            setIsPlayingRecordedVideo(false);
+            // Important: setIsPlayingRecordedVideo(false) should be handled by UrdfUploader's handlePlayRecordedData
+            // as it's responsible for coordinating the robot animation loop and resuming live camera.
             URL.revokeObjectURL(videoUrl);
             playerElement.src = '';
             playerElement.controls = false;
@@ -157,18 +159,18 @@ const VideoRecorder = ({
         }).catch(e => {
             console.error("[VideoRecorder] Error playing recorded video (possible autoplay block or codec issue):", e);
             onRecordingStatusChange(`Error playing video: ${e.name} - ${e.message}. Check browser console for details.`, false);
-            setIsPlayingRecordedVideo(false);
+            setIsPlayingRecordedVideo(false); // Reset on error
             try { URL.revokeObjectURL(videoUrl); } catch (revokeErr) { console.warn("Error revoking URL after playback error:", revokeErr); }
         });
         console.log("[VideoRecorder] Attempted to play video from blob URL:", videoUrl);
     }, [localRecordedVideoBlob, setIsPlayingRecordedVideo, onPlayRecordedData, recordedJointStatesData, recordedVideoPlayerRef, onRecordingStatusChange, isRecording]);
 
     useEffect(() => {
-        console.log("--- Current Button States ---");
-        console.log("Start Recording disabled:", isRecording || !isRobotLoaded || isPlayingRecordedVideo);
-        console.log("Stop Recording disabled:", !isRecording);
-        console.log("Play Recorded Video disabled:", !localRecordedVideoBlob || localRecordedVideoBlob.size === 0 || isPlayingRecordedVideo || isRecording);
-        console.log("----------------------------");
+        // console.log("--- Current Button States ---");
+        // console.log("Start Recording disabled:", isRecording || !isRobotLoaded || isPlayingRecordedVideo);
+        // console.log("Stop Recording disabled:", !isRecording);
+        // console.log("Play Recorded Video disabled:", !localRecordedVideoBlob || localRecordedVideoBlob.size === 0 || isPlayingRecordedVideo || isRecording || recordedJointStatesData.length === 0);
+        // console.log("----------------------------");
     }, [isRecording, isRobotLoaded, isPlayingRecordedVideo, localRecordedVideoBlob, recordedJointStatesData]);
 
 
@@ -184,7 +186,7 @@ const VideoRecorder = ({
             }
             if (recordedVideoPlayerRef.current) {
                 if (!recordedVideoPlayerRef.current.paused) {
-                    recordedVideoPlayerRef.current.pause();
+                    recordedVideoPlayerRef.current.pause(); // Ensure video stops playing
                     console.log("[VideoRecorder] Paused playing video on component unmount.");
                 }
                 recordedVideoPlayerRef.current.currentTime = 0;
@@ -214,7 +216,7 @@ const VideoRecorder = ({
                 </button>
                 <button
                     onClick={playRecordedVideo}
-                    disabled={!localRecordedVideoBlob || localRecordedVideoBlob.size === 0 || isPlayingRecordedVideo || isRecording}
+                    disabled={!localRecordedVideoBlob || localRecordedVideoBlob.size === 0 || isPlayingRecordedVideo || isRecording || recordedJointStatesData.length === 0}
                     className="w-full bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 disabled:from-slate-600 disabled:to-slate-700 disabled:cursor-not-allowed px-6 py-3 rounded-xl font-semibold transition-all duration-300 transform hover:scale-105 disabled:hover:scale-100 shadow-lg hover:shadow-blue-500/25"
                 >
                     Play Recorded Video

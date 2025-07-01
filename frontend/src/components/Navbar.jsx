@@ -18,7 +18,7 @@ const Navbar = () => {
     { name: 'Partners', path: '/partners' },
     { name: 'Information', path: '/information' },
     { name: 'Tools', path: '/tools' },
-    { name: 'Upload URDF', path: '/upload-urdf' }, // Added new navigation item
+    { name: 'Upload URDF', path: '/upload-urdf' }, // NEW: Added navigation item for the new page
   ];
 
   return (

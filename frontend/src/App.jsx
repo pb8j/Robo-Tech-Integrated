@@ -37,8 +37,8 @@ function App() {
     // This helps prevent the flicker by waiting for the initial check.
     // If you also want to redirect to / if user is null after loading, you can add:
     // if (!user && window.location.pathname !== '/login' && window.location.pathname !== '/signup' && window.location.pathname !== '/') {
-    // 	 	console.log('App.jsx: User is null and not loading, redirecting to /login');
-    // 	 	return <Navigate to="/login" />;
+    //      console.log('App.jsx: User is null and not loading, redirecting to /login');
+    //      return <Navigate to="/login" />;
     // }
 
 
@@ -66,6 +66,8 @@ function App() {
                         path="/tools"
                         element={user ? <ControlPanel /> : <Navigate to="/login" />}
                     />
+                    
+
                     <Route
                         // FIX: Changed path from "/phone-camera" to "/phonecam" to match the error in the console.
                         // Alternatively, if you want the path to be "/phone-camera", you would need to ensure

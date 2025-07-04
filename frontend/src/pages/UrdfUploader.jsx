@@ -95,20 +95,20 @@ const UrdfUploader = () => {
     }, [fileMapForModel]);
 
     // Utility functions for angle calculation
-    // const mapRange = useCallback((value, inMin, inMax, outMin, outMax) => {
-    //     const clampedValue = Math.max(inMin, Math.min(value, inMax));
-    //     return (clampedValue - inMin) * (outMax - outMin) / (inMax - inMin) + outMax; // Corrected mapping direction
-    // }, []);
+    const mapRange = useCallback((value, inMin, inMax, outMin, outMax) => {
+        const clampedValue = Math.max(inMin, Math.min(value, inMax));
+        return (clampedValue - inMin) * (outMax - outMin) / (inMax - inMin) + outMin;
+    }, []);
 
-    // const calculateAngle = useCallback((a, b, c) => {
-    //     if (!a || !b || !c) return 0;
-    //     const rad = Math.atan2(c.y - b.y, c.x - b.x) - Math.atan2(a.y - b.y, a.x - b.x);
-    //     let angle = Math.abs(rad);
-    //     if (angle > Math.PI) {
-    //         angle = 2 * Math.PI - angle;
-    //     }
-    //     return angle;
-    // }, []);
+    const calculateAngle = useCallback((a, b, c) => {
+        if (!a || !b || !c) return 0;
+        const rad = Math.atan2(c.y - b.y, c.x - b.x) - Math.atan2(a.y - b.y, a.x - b.x);
+        let angle = Math.abs(rad);
+        if (angle > Math.PI) {
+            angle = 2 * Math.PI - angle;
+        }
+        return angle;
+    }, []);
 
     // Callback from VideoRecorder to update recording status and collect data
     const handleRecordingStatusChange = useCallback((message, isRecordingNow) => {
@@ -237,109 +237,193 @@ const UrdfUploader = () => {
     }, [recordedVideoBlob]); // Dependency array for handlePlayRecordedData
 
     // MediaPipe results processing (receives results from whichever source Holistic is processing)
-    const mapRange = useCallback((value, inMin, inMax, outMin, outMax) => {
-    const clampedValue = Math.max(inMin, Math.min(value, inMax));
-    return (clampedValue - inMin) * (outMax - outMin) / (inMax - inMin) + outMin;
-}, []);
+    // In the onResults callback:
+    const onResults = useCallback((results) => {
+        setPoseLandmarks(results.poseLandmarks || null);
+        setLeftHandLandmarks(results.leftHandLandmarks || null);
+        setRightHandLandmarks(results.rightHandLandmarks || null);
 
-const calculateAngle = useCallback((a, b, c) => {
-    if (!a || !b || !c) return 0;
-    const rad = Math.atan2(c.y - b.y, c.x - b.x) - Math.atan2(a.y - b.y, a.x - b.x);
-    let angle = Math.abs(rad);
-    if (angle > Math.PI) {
-        angle = 2 * Math.PI - angle;
-    }
-    return angle;
-}, []);
+        let newJointStates = {};
 
-// In the onResults callback:
-const onResults = useCallback((results) => {
-    setPoseLandmarks(results.poseLandmarks || null);
-    setLeftHandLandmarks(results.leftHandLandmarks || null);
-    setRightHandLandmarks(results.rightHandLandmarks || null);
+        // Head control
+        if (results.poseLandmarks?.[0] && loadedRobotInstanceRef.current) {
+            const headYaw = mapRange(results.poseLandmarks[0].x, 0, 1, 3*Math.PI/2, -3*Math.PI/2);
+            const headPitch = mapRange(results.poseLandmarks[0].y, 0, 1, 3*Math.PI/2, -3*Math.PI/2);
+            newJointStates = { 
+                ...newJointStates, 
+                'HEAD_JOINT0': -headYaw,
+                'HEAD_JOINT1': -headPitch 
+            };
+        }
 
-    let newJointStates = {};
+        // Left arm control
+        if (results.leftHandLandmarks && results.poseLandmarks?.[11] && results.poseLandmarks?.[13]) {
+    const wrist = results.leftHandLandmarks[0];
+    const elbow = results.poseLandmarks[13];
+    const shoulder = results.poseLandmarks[11];
 
-    // Head control
-    if (results.poseLandmarks?.[0] && loadedRobotInstanceRef.current) {
-        const headYaw = mapRange(results.poseLandmarks[0].x, 0, 1, Math.PI, -Math.PI);
-        const headPitch = mapRange(results.poseLandmarks[0].y, 0, 1, Math.PI, -Math.PI);
-        newJointStates = { 
-            ...newJointStates, 
-            'HEAD_JOINT0': -headYaw,
-            'HEAD_JOINT1': -headPitch 
-        };
-    }
+    // Existing pitch and roll
+    const shoulderPitch = mapRange(wrist.y, 0, 0.75, Math.PI, -Math.PI/6);
+    const shoulderRoll = mapRange(wrist.x, 0, 1, Math.PI/4, -Math.PI/4);
 
-    // Left arm control
-    if (results.leftHandLandmarks && results.poseLandmarks?.[11] && results.poseLandmarks?.[13]) {
-        const wrist = results.leftHandLandmarks[0];
-        const elbow = results.poseLandmarks[13];
-        const shoulder = results.poseLandmarks[11];
+    // New yaw based on x-distance from shoulder to wrist
+    const deltaX = wrist.x - shoulder.x;
+    const shoulderYaw = mapRange(deltaX, -0.5, 0.5, -Math.PI / 2, Math.PI / 2);
 
-        const shoulderPitch = mapRange(wrist.y, 0, 0.75, Math.PI, -Math.PI/6);
-        const shoulderRoll = mapRange(wrist.x, 0, 1, Math.PI/4, -Math.PI/4);
-        const leftElbowAngleRad = calculateAngle(shoulder, elbow, wrist);
-        const elbowJointAngle = mapRange(leftElbowAngleRad, 0.1, Math.PI - 0.1, Math.PI/2, 0);
+    const leftElbowAngleRad = calculateAngle(shoulder, elbow, wrist);
+    const elbowJointAngle = mapRange(leftElbowAngleRad, 0.1, Math.PI - 0.1, Math.PI/2, 0);
 
-        newJointStates = { 
-            ...newJointStates, 
-            'LARM_JOINT0': -shoulderRoll,
-            'LARM_JOINT1': -shoulderPitch,
-            'LARM_JOINT4': -elbowJointAngle
-        };
-    }
+    newJointStates = { 
+        ...newJointStates, 
+        'LARM_JOINT0': -shoulderRoll,   // Roll
+        'LARM_JOINT1': -shoulderPitch,  // Pitch
+        'LARM_JOINT2': shoulderYaw,     // Yaw (added)
+        'LARM_JOINT4': -elbowJointAngle
+    };
+}
 
-    // Right arm control
-    if (results.rightHandLandmarks && results.poseLandmarks?.[12] && results.poseLandmarks?.[14]) {
-        const wrist = results.rightHandLandmarks[0];
-        const elbow = results.poseLandmarks[14];
-        const shoulder = results.poseLandmarks[12];
+// Right arm control
+if (results.rightHandLandmarks && results.poseLandmarks?.[12] && results.poseLandmarks?.[14]) {
+    const wrist = results.rightHandLandmarks[0];
+    const elbow = results.poseLandmarks[14];
+    const shoulder = results.poseLandmarks[12];
 
-        const shoulderPitch = mapRange(wrist.y, 0, 0.75, Math.PI, -Math.PI/6);
-        const shoulderRoll = mapRange(wrist.x, 0, 1, Math.PI/4, -Math.PI/4);
-        const rightElbowAngleRad = calculateAngle(shoulder, elbow, wrist);
-        const elbowJointAngle = mapRange(rightElbowAngleRad, 0.1, Math.PI - 0.1, Math.PI/2, 0);
+    const shoulderPitch = mapRange(wrist.y, 0, 0.75, Math.PI, -Math.PI/6);
+    const shoulderRoll = mapRange(wrist.x, 0, 1, Math.PI/4, -Math.PI/4);
 
-        newJointStates = { 
-            ...newJointStates, 
-            'RARM_JOINT0': -shoulderRoll,
-            'RARM_JOINT1': -shoulderPitch,
-            'RARM_JOINT4': -elbowJointAngle
-        };
-    }
+    const deltaX = wrist.x - shoulder.x;
+    const shoulderYaw = mapRange(deltaX, -0.5, 0.5, -Math.PI / 2, Math.PI / 2);
 
-    // Apply smoothing if enabled
-    if (Object.keys(newJointStates).length > 0) {
-        let finalJointStates = newJointStates;
-        
-        if (useSmoothing) {
-            const currentSmoothedStates = {};
-            const previousStates = prevJointStatesRef.current;
+    const rightElbowAngleRad = calculateAngle(shoulder, elbow, wrist);
+    const elbowJointAngle = mapRange(rightElbowAngleRad, 0.1, Math.PI - 0.25, Math.PI, 0);
+
+    newJointStates = { 
+        ...newJointStates, 
+        'RARM_JOINT0': -shoulderRoll,
+        'RARM_JOINT1': -shoulderPitch,
+        'RARM_JOINT2': shoulderYaw,
+        'RARM_JOINT4': -elbowJointAngle
+    };
+}
+
+// Full upper-body waist control
+// if (
+//     results.poseLandmarks?.[11] && // left shoulder
+//     results.poseLandmarks?.[12] && // right shoulder
+//     results.poseLandmarks?.[23] && // left hip
+//     results.poseLandmarks?.[24]    // right hip
+// ) {
+//     const leftShoulder = results.poseLandmarks[11];
+//     const rightShoulder = results.poseLandmarks[12];
+//     const leftHip = results.poseLandmarks[23];
+//     const rightHip = results.poseLandmarks[24];
+
+//     // 🔄 Chest Yaw (twisting left/right)
+//     const deltaHipX = leftHip.x - rightHip.x;
+//     const chestYaw = mapRange(deltaHipX, -0.4, 0.4, -1.0566, 1.0566);  // CHEST_JOINT2
+
+//     // ↔️ Chest Roll (side-bending)
+//     const deltaShoulderY = leftShoulder.y - rightShoulder.y;
+//     const chestRoll = mapRange(deltaShoulderY, -0.4, 0.4, -0.0349, 0.6108);  // CHEST_JOINT1
+
+//     // ↕️ Chest Pitch (bending forward/backward)
+//     const avgShoulderY = (leftShoulder.y + rightShoulder.y) / 2;
+//     const avgHipY = (leftHip.y + rightHip.y) / 2;
+//     const deltaTorsoY = avgShoulderY - avgHipY;
+//     const chestPitch = mapRange(deltaTorsoY, -0.3, 0.3, -0.1986, 0.1986);  // CHEST_JOINT0
+
+//     newJointStates = {
+//         ...newJointStates,
+//         'CHEST_JOINT0': chestPitch,
+//         'CHEST_JOINT1': chestRoll,
+//         'CHEST_JOINT2': chestYaw
+//     };
+// }
+
+
+//         // Commented out leg movement code
+        /*
+        // Left leg control
+        if (results.poseLandmarks?.[23] && results.poseLandmarks?.[25] && results.poseLandmarks?.[27]) {
+            const hip = results.poseLandmarks[23];
+            const knee = results.poseLandmarks[25];
+            const ankle = results.poseLandmarks[27];
+
+            // Hip rotation (yaw) based on horizontal position
+            const hipYaw = mapRange(hip.z, 0.2, 0.8, Math.PI/6, -Math.PI/6); // Inverted to fix left/right misalignment
+
+            // Hip pitch (forward/backward movement) - improved calculation
+            const hipHeightRatio = (hip.y - ankle.y) / (knee.y - ankle.y);
+            const hipPitch = mapRange(hipHeightRatio, 0.5, 2.0, -Math.PI/3, Math.PI/3);
             
-            for (const jointName in newJointStates) {
-                if (typeof newJointStates[jointName] === 'number') {
-                    const currentVal = previousStates[jointName] !== undefined ? 
-                        previousStates[jointName] : newJointStates[jointName];
-                    currentSmoothedStates[jointName] = 
-                        currentVal + (newJointStates[jointName] - currentVal) * smoothingFactor;
+            // Knee angle calculation - fixed inversion
+            const kneeAngle = calculateAngle(hip, knee, ankle);
+            const kneePitch = mapRange(kneeAngle, 0.5, 2.5, Math.PI/4, 0);
+
+            newJointStates = {
+                ...newJointStates,
+                'LLEG_JOINT0': -hipYaw,  // Removed negative
+                'LLEG_JOINT1': -hipPitch, // Keep negative for natural movement
+                'LLEG_JOINT2': -kneePitch  // Removed negative
+            };
+        }
+
+        // Right leg control
+        if (results.poseLandmarks?.[24] && results.poseLandmarks?.[26] && results.poseLandmarks?.[28]) {
+            const hip = results.poseLandmarks[24];
+            const knee = results.poseLandmarks[26];
+            const ankle = results.poseLandmarks[28];
+
+            // Hip rotation (yaw) - use z-coordinate for depth
+            const hipYaw = mapRange(hip.z, 0.2, 0.8, -Math.PI/6, Math.PI/6);
+            
+            // Hip pitch (forward/backward movement)
+            const hipPitch = mapRange(hip.y - knee.y, -0.2, 0.2, Math.PI/6, -Math.PI/6);
+            
+            // Knee angle calculation
+            const kneeAngle = calculateAngle(hip, knee, ankle);
+            const kneePitch = mapRange(kneeAngle, 0.5, 2.5, 0, Math.PI/2);
+
+            newJointStates = {
+                ...newJointStates,
+                'RLEG_JOINT0': hipYaw,
+                'RLEG_JOINT1': hipPitch,
+                'RLEG_JOINT2': kneePitch
+            };
+        }
+        */
+
+        // Apply smoothing if enabled
+        if (Object.keys(newJointStates).length > 0) {
+            let finalJointStates = newJointStates;
+            
+            if (useSmoothing) {
+                const currentSmoothedStates = {};
+                const previousStates = prevJointStatesRef.current;
+                
+                for (const jointName in newJointStates) {
+                    if (typeof newJointStates[jointName] === 'number') {
+                        const currentVal = previousStates[jointName] !== undefined ? 
+                            previousStates[jointName] : newJointStates[jointName];
+                        currentSmoothedStates[jointName] = 
+                            currentVal + (newJointStates[jointName] - currentVal) * smoothingFactor;
+                    }
                 }
+                finalJointStates = currentSmoothedStates;
+                prevJointStatesRef.current = currentSmoothedStates;
+            } else {
+                prevJointStatesRef.current = newJointStates;
             }
-            finalJointStates = currentSmoothedStates;
-            prevJointStatesRef.current = currentSmoothedStates;
-        } else {
-            prevJointStatesRef.current = newJointStates;
+            
+            setRobotJointStates(finalJointStates);
+            
+            if (isRecordingActiveRef.current) {
+                currentJointStatesBufferRef.current.push({ ...finalJointStates });
+            }
+        } else if (isRecordingActiveRef.current && Object.keys(prevJointStatesRef.current).length > 0) {
+            currentJointStatesBufferRef.current.push({ ...prevJointStatesRef.current });
         }
-        
-        setRobotJointStates(finalJointStates);
-        
-        if (isRecordingActiveRef.current) {
-            currentJointStatesBufferRef.current.push({ ...finalJointStates });
-        }
-    } else if (isRecordingActiveRef.current && Object.keys(prevJointStatesRef.current).length > 0) {
-        currentJointStatesBufferRef.current.push({ ...prevJointStatesRef.current });
-    }
-}, [mapRange, calculateAngle, useSmoothing, smoothingFactor]);
+    }, [mapRange, calculateAngle, useSmoothing, smoothingFactor]);
 
     // MediaPipe initialization and cleanup 
     useEffect(() => {
@@ -636,23 +720,22 @@ const onResults = useCallback((results) => {
                         </div>
                             
                         <div className="flex items-center mb-4">
-    <label className="flex items-center cursor-pointer">
-        <div className="relative">
-            <input 
-                type="checkbox" 
-                className="sr-only" 
-                checked={useSmoothing}
-                onChange={() => setUseSmoothing(!useSmoothing)}
-            />
-            <div className={`block w-14 h-8 rounded-full ${useSmoothing ? 'bg-purple-600' : 'bg-gray-600'}`}></div>
-            <div className={`dot absolute left-1 top-1 bg-white w-6 h-6 rounded-full transition ${useSmoothing ? 'transform translate-x-6' : ''}`}></div>
-        </div>
-        <div className="ml-3 text-sm font-medium text-purple-300">
-            Motion Smoothing
-        </div>
-    </label>
-</div>
-
+                            <label className="flex items-center cursor-pointer">
+                                <div className="relative">
+                                    <input 
+                                        type="checkbox" 
+                                        className="sr-only" 
+                                        checked={useSmoothing}
+                                        onChange={() => setUseSmoothing(!useSmoothing)}
+                                    />
+                                    <div className={`block w-14 h-8 rounded-full ${useSmoothing ? 'bg-purple-600' : 'bg-gray-600'}`}></div>
+                                    <div className={`dot absolute left-1 top-1 bg-white w-6 h-6 rounded-full transition ${useSmoothing ? 'transform translate-x-6' : ''}`}></div>
+                                </div>
+                                <div className="ml-3 text-sm font-medium text-purple-300">
+                                    Motion Smoothing
+                                </div>
+                            </label>
+                        </div>
 
                         <div className="flex flex-col space-y-3 mb-6">
                             <button
@@ -703,6 +786,10 @@ const onResults = useCallback((results) => {
                                 <li className="flex items-center space-x-2">
                                     <span className="w-2 h-2 bg-green-400 rounded-full"></span>
                                     <span>Right hand controls right arm</span>
+                                </li>
+                                <li className="flex items-center space-x-2">
+                                    <span className="w-2 h-2 bg-yellow-400 rounded-full"></span>
+                                    <span>Hip position controls leg movement</span>
                                 </li>
                                 <li className="flex items-center space-x-2">
                                     <span className="w-2 h-2 bg-purple-400 rounded-full"></span>

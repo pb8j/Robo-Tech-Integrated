@@ -91,6 +91,9 @@ const fixMaterialIssues = (object) => {
 };
 
 // ** FIX: Enhanced robot orientation function **
+// ... existing code ...
+
+// Enhanced robot orientation function
 const applyRobotOrientation = (robot, selectedRobotName, scale, initialPosition) => {
     console.log(`[UrdfRobotModel] Applying orientation for robot: ${selectedRobotName}`);
 
@@ -106,13 +109,12 @@ const applyRobotOrientation = (robot, selectedRobotName, scale, initialPosition)
         size: { x: initialSize.x.toFixed(3), y: initialSize.y.toFixed(3), z: initialSize.z.toFixed(2) },
     });
 
-    // ** FIX: Rotate the robot to stand upright (Y-axis up) **
-    // URDF models often use Z-up, while Three.js uses Y-up.
-    // We rotate -90 degrees around the X-axis to correct this.
+    // FIX: Only apply -90° X rotation for Z-up models
     robot.rotation.x = -Math.PI / 2;
     robot.rotation.z = -Math.PI / 3;
-    robot.updateMatrixWorld(true);
-
+    
+    // FIX: Remove extra Z rotation that was causing legs to face the screen
+    // robot.rotation.z = -Math.PI / 3; // REMOVED THIS LINE
 
     if (selectedRobotName === 'jaxon_jvrc') {
         robot.scale.set(scale * 0.001, scale * 0.001, scale * 0.001);
@@ -142,6 +144,8 @@ const applyRobotOrientation = (robot, selectedRobotName, scale, initialPosition)
         scale: { x: robot.scale.x.toFixed(3), y: robot.scale.y.toFixed(3), z: robot.scale.z.toFixed(3) },
     });
 };
+
+// ... existing code ...
 
 const UrdfRobotModel = ({
     urdfContent,
